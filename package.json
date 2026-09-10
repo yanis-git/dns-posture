@@ -13,8 +13,8 @@
     "node": ">=20.12"
   },
   "scripts": {
-    "test": "node --test test/",
-    "test:watch": "node --test --watch test/",
+    "test": "node --test",
+    "test:watch": "node --test --watch",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix"
   },
