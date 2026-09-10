@@ -119,7 +119,7 @@ async function cmdHarden(opts, p) {
   } catch (err) {
     throw new Error(err.status === 404
       ? `Zone "${zone}" not found at OVH (DNS delegated elsewhere?)`
-      : err.message);
+      : err.message, { cause: err });
   }
 
   console.log(opts.apply ? `APPLYING to ${zone}` : `DRY-RUN on ${zone} — add --apply to execute`);
