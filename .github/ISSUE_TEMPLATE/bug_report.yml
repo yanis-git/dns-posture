@@ -1,0 +1,55 @@
+name: Bug report
+description: Something behaved differently from what the docs describe.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Security issue? Do not open an issue — see `SECURITY.md` for private reporting.
+
+        **Do not paste a real zone, a real domain name, a CSV export or anything from `.env`.**
+        Redact domains to `example.com` and IPs to `203.0.113.x`. If a redacted report cannot
+        show the problem, say so and we will work out what is needed.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: The command you ran and its output, redacted.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected instead
+    validations:
+      required: true
+  - type: textarea
+    id: zone
+    attributes:
+      label: Relevant zone shape (redacted)
+      description: >
+        For classifier or parser issues: the record types, names and the *shape* of the values,
+        with real names replaced.
+      render: dns
+  - type: input
+    id: node
+    attributes:
+      label: Node version
+      placeholder: "output of `node --version`"
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Tool version
+      placeholder: "output of `node ovh.mjs --version`, or the commit sha"
+    validations:
+      required: true
+  - type: checkboxes
+    id: hygiene
+    attributes:
+      label: Before submitting
+      options:
+        - label: This report contains no real domain names, IPs, credentials or personal data.
+          required: true

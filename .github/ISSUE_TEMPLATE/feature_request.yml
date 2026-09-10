@@ -1,0 +1,25 @@
+name: Feature request
+description: Suggest a change or a new capability.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to do that the tool makes hard or impossible today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like it to do
+    validations:
+      required: true
+  - type: textarea
+    id: safety
+    attributes:
+      label: Safety impact
+      description: >
+        Does this touch a guard rail — the dry-run default, the backup-before-write rule, the
+        mail-active check, or what `harden` publishes and deletes? See AGENTS.md and
+        docs/POLICY.md.

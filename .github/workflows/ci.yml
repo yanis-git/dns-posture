@@ -1,0 +1,94 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: test (node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['20.12', '22', '24']
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      # The suite never talks to OVH: every test either stubs fetch or runs the
+      # CLI with OVH_ENV_FILE pointing at a file that does not exist.
+      - name: Test
+        run: npm test
+
+  secrets:
+    name: secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  hygiene:
+    name: no operational data committed
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # A single leaked zone dump exposes production IPs, internal hostnames and
+      # verification tokens; a leaked CSV export exposes registrant identities.
+      # This is the one mistake that cannot be undone once pushed.
+      - name: No zone dumps, CSV exports or credentials tracked
+        run: |
+          set -euo pipefail
+          bad=$(git ls-files | grep -Ei '(^|/)\.env$|\.zone$|\.csv$|(^|/)inventory\.(md|json)$' || true)
+          if [ -n "$bad" ]; then
+            echo "::error::operational data must not be committed:"
+            echo "$bad"
+            exit 1
+          fi
+          echo "clean"
+
+      - name: .gitignore actually covers the sensitive paths
+        run: |
+          set -euo pipefail
+          for path in .env storage/backups/example.com/x.zone storage/inventory.md; do
+            if ! git check-ignore -q "$path"; then
+              echo "::error::$path is NOT ignored by .gitignore"
+              exit 1
+            fi
+          done
+          echo "clean"
+
+      - name: storage/ ships empty
+        run: |
+          set -euo pipefail
+          tracked=$(git ls-files storage/ | grep -v '\.gitkeep$' || true)
+          if [ -n "$tracked" ]; then
+            echo "::error::storage/ must only contain .gitkeep files:"
+            echo "$tracked"
+            exit 1
+          fi
+          echo "clean"

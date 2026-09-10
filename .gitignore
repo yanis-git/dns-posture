@@ -1,0 +1,38 @@
+# --- Secrets -----------------------------------------------------------------
+# Never commit OVH credentials. .env holds APP_KEY / APP_SECRET / consumer key
+# whose access rules include DELETE on every DNS zone of the account.
+.env
+.env.*
+!.env.example
+
+# --- Operational data --------------------------------------------------------
+# storage/ holds real DNS zone dumps, registrant CSV exports and generated
+# reports. It is per-operator data and must stay out of the repository.
+# Note: git cannot re-include a file whose parent directory is excluded, so the
+# two sub-directories are un-excluded first and emptied on the next line.
+storage/*
+!storage/.gitkeep
+!storage/backups/
+!storage/reports/
+storage/backups/*
+storage/reports/*
+!storage/backups/.gitkeep
+!storage/reports/.gitkeep
+
+# Belt and braces: these never belong in git, wherever they end up.
+*.zone
+*.csv
+inventory.json
+inventory.md
+
+# --- Tooling -----------------------------------------------------------------
+node_modules/
+coverage/
+*.log
+npm-debug.log*
+
+# --- Editors / OS ------------------------------------------------------------
+.idea/
+.vscode/
+*.swp
+.DS_Store
