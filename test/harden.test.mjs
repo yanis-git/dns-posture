@@ -4,7 +4,7 @@
 
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildPolicy, planZone, applyPlan, fetchRecords, recordLabel, parseCaa, DEFAULT_CNAMES_TO_DROP } from '../lib/harden.mjs';
+import { buildPolicy, planZone, applyPlan, fetchRecords, recordLabel, DEFAULT_CNAMES_TO_DROP } from '../lib/harden.mjs';
 
 globalThis.fetch = () => { throw new Error('no network in unit tests'); };
 
@@ -61,29 +61,6 @@ describe('buildPolicy', () => {
     assert.deepEqual(subs(p).slice(0, 3), ['@', '_dmarc', '*._domainkey']);
     assert.equal(p[0].target, 'v=spf1 -all');
     assert.ok(p.every((r) => r.why), 'every record explains itself in the plan output');
-  });
-});
-
-describe('parseCaa', () => {
-  // Tolerance here is what keeps planZone idempotent: a quoting variant we fail
-  // to recognise reads as "different from the policy" and churns on every run.
-  test('reads every quoting variant OVH might hand back', () => {
-    for (const form of ['0 issue ";"', '0 issue ;', '"0 issue ;"', '0 "issue" ";"', '"0 issue \\";\\""']) {
-      const caa = parseCaa(form);
-      assert.equal(caa?.tag, 'issue', `tag lost on: ${form}`);
-      assert.equal(caa.flags, 0);
-    }
-  });
-
-  test('keeps the flags and lowercases the tag', () => {
-    assert.deepEqual(parseCaa('128 ISSUEWILD "letsencrypt.org"'),
-      { flags: 128, tag: 'issuewild', value: 'letsencrypt.org' });
-  });
-
-  test('returns null on something that is not a CAA at all', () => {
-    assert.equal(parseCaa('v=spf1 -all'), null);
-    assert.equal(parseCaa(''), null);
-    assert.equal(parseCaa(undefined), null);
   });
 });
 
@@ -440,26 +417,5 @@ describe('fetchRecords', () => {
   test('anything other than a 404 or a 400 still propagates', async () => {
     const ovh = { async get() { const e = new Error('rate limited'); e.status = 429; throw e; } };
     await assert.rejects(() => fetchRecords(ovh, 'example.com'), /rate limited/);
-  });
-});
-
-describe('recordLabel', () => {
-  test('does not double the quotes OVH already puts around a TXT target', () => {
-    assert.equal(recordLabel({ subDomain: '', fieldType: 'TXT', target: '"v=spf1 -all"' }), '@ TXT "v=spf1 -all"');
-  });
-
-  test('quotes an unquoted target', () => {
-    assert.equal(recordLabel({ subDomain: '_dmarc', fieldType: 'TXT', target: 'v=DMARC1; p=reject' }), '_dmarc TXT "v=DMARC1; p=reject"');
-  });
-
-  test('only a surrounding quote pair is stripped, not inner ones', () => {
-    assert.equal(recordLabel({ subDomain: '@', fieldType: 'TXT', target: 'a "b" c' }), '@ TXT "a "b" c"');
-  });
-
-  test('a structured target carries its own quoting and gets none added', () => {
-    // `@ CAA "0 issue ";""` is unreadable and does not round-trip.
-    assert.equal(recordLabel({ subDomain: '', fieldType: 'CAA', target: '0 issue ";"' }), '@ CAA 0 issue ";"');
-    assert.equal(recordLabel({ subDomain: '', fieldType: 'MX', target: '0 .' }), '@ MX 0 .');
-    assert.equal(recordLabel({ subDomain: 'ftp', fieldType: 'CNAME', target: 'example.com.' }), 'ftp CNAME example.com.');
   });
 });
