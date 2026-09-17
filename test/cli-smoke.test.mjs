@@ -26,13 +26,14 @@ afterEach(() => { rmSync(storage, { recursive: true, force: true }); });
  * live OVH account. OVH_ENDPOINT is invalid on top, so any code path that does
  * manage to build a client fails locally instead of reaching the network.
  */
-async function cli(args) {
+async function cli(args, extraEnv = {}) {
   const env = {
     PATH: process.env.PATH,
     HOME: storage,
     OVH_STORAGE_DIR: storage,
     OVH_ENV_FILE: join(storage, 'no-such.env'),
     OVH_ENDPOINT: 'ovh-nowhere',
+    ...extraEnv,
   };
   try {
     const { stdout, stderr } = await run(process.execPath, [CLI, ...args], { env, timeout: 20000 });
@@ -286,5 +287,90 @@ describe('compliance — the offline portfolio audit', () => {
     assert.match(stdout, /node ovh\.mjs compliance/);
     assert.match(stdout, /--caa/);
     assert.match(stdout, /--iodef/);
+  });
+});
+
+describe('the policy subcommand', () => {
+  test('prints the shipped configuration with no backup, no credentials and no network', async () => {
+    const { code, stdout } = await cli(['policy']);
+    assert.equal(code, 0, stdout);
+    assert.match(stdout, /config\/policy\.mjs \(schema v1\) — valid/);
+    assert.match(stdout, /Record templates \(6\)/);
+    assert.match(stdout, /Remedy per check \(24 checks × 3 profiles\)/);
+    // The remedy of a check is the whole point of the file: show it, per profile.
+    assert.match(stdout, /spf\.hardfail\s+enforce spf\.deny\s+enforce spf\.deny/);
+  });
+
+  test('resolves one domain against its backup and previews what harden would do', async () => {
+    seedBackups();
+    const { code, stdout } = await cli(['policy', 'dormant.example']);
+    assert.equal(code, 0, stdout);
+    assert.match(stdout, /state {4}: dormant/);
+    assert.match(stdout, /profile {2}: dormant/);
+    assert.match(stdout, /Would publish/);
+    assert.match(stdout, /Would delete \(\d+\) {3}every deletion is licensed by a failing check/);
+    // The dormant fixture is already hardened bar the DKIM revocation.
+    assert.match(stdout, /\+ \*\._domainkey TXT "v=DKIM1; p="\s+dkim\.wildcard-revoked/);
+    assert.match(stdout, /never contacts OVH/);
+  });
+
+  test('a mail-active zone resolves to a profile that would write nothing', async () => {
+    seedBackups();
+    const { code, stdout } = await cli(['policy', 'mail.example', '--json']);
+    assert.equal(code, 0, stdout);
+    const out = JSON.parse(stdout);
+    assert.equal(out.state, 'mail-active');
+    assert.equal(out.profile, 'mail-active');
+    assert.deepEqual([out.plan.create, out.plan.delete], [[], []]);
+    assert.ok(out.checks.every((c) => !['add', 'enforce', 'remove'].includes(c.action)),
+      'a mail-active profile must carry no writing remedy');
+  });
+
+  test('--json names the check behind every publication', async () => {
+    seedBackups();
+    const { stdout } = await cli(['policy', 'dormant.example', '--json']);
+    const out = JSON.parse(stdout);
+    assert.equal(out.schemaVersion, 1);
+    assert.equal(out.checks.length, 24);
+    for (const rec of out.plan.create) assert.ok(rec.wantedBy.length, `${rec.label} was published by nothing`);
+    for (const rec of out.plan.delete) assert.ok(rec.checkId, `${rec.label} was deleted by nothing`);
+  });
+
+  test('without a backup it says what to run instead of crashing', async () => {
+    const { code, stderr } = await cli(['policy', 'never-seen.example']);
+    assert.equal(code, 1);
+    assert.match(stderr, /No backup for never-seen\.example/);
+    assert.match(stderr, /snapshot never-seen\.example/);
+  });
+
+  test('a broken policy file stops the run and says nothing was touched', async () => {
+    const broken = join(storage, 'broken-policy.mjs');
+    writeFileSync(broken, 'export default { version: 1, profiles: {}, oops: true };\n');
+    const { code, stderr } = await cli(['policy'], { OVH_POLICY_FILE: broken });
+    assert.equal(code, 1);
+    assert.match(stderr, /unknown top-level key/);
+    assert.match(stderr, /no profile covers the classifier state "dormant"/);
+    assert.match(stderr, /Nothing was read from OVH and nothing was written/);
+  });
+
+  test('a policy file that is not there at all fails by name', async () => {
+    const { code, stderr } = await cli(['policy'], { OVH_POLICY_FILE: join(storage, 'absent.mjs') });
+    assert.equal(code, 1);
+    assert.match(stderr, /cannot be loaded/);
+  });
+
+  test('a broken policy file does not stand between an operator and restore', async () => {
+    seedBackups();
+    const broken = join(storage, 'broken-policy.mjs');
+    writeFileSync(broken, 'export default { version: 99 };\n');
+    const { code, stdout } = await cli(['restore', 'dormant.example'], { OVH_POLICY_FILE: broken });
+    assert.equal(code, 0, stdout);
+    assert.match(stdout, /DRY-RUN — add --apply/);
+  });
+
+  test('the help lists the subcommand and the policy file', async () => {
+    const { stdout } = await cli([]);
+    assert.match(stdout, /node ovh\.mjs policy/);
+    assert.match(stdout, /OVH_POLICY_FILE/);
   });
 });
