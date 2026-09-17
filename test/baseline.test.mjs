@@ -153,6 +153,26 @@ describe('anti-spoofing controls', () => {
     assert.equal(status([txt('@', 'v=spf1')], 'spf.hardfail'), 'fail');
   });
 
+  test('a hard fail is not enough: a non-sending domain must authorise nobody', () => {
+    // The gap `spf.hardfail` leaves. It reads the terminal qualifier and nothing
+    // else, so it passes the record below — which still lets every host in a
+    // shared provider's SPF send as this domain, because the first mechanism to
+    // match wins and `-all` only covers the remainder (RFC 7208 §4.6.2).
+    const shared = [txt('@', 'v=spf1 include:mx.ovh.com -all')];
+    assert.equal(status(shared, 'spf.hardfail'), 'pass');
+    assert.equal(status(shared, 'spf.no-senders'), 'fail');
+
+    assert.equal(status([txt('@', 'v=spf1 -all')], 'spf.no-senders'), 'pass');
+    assert.equal(status([txt('@', 'v=spf1 a mx -all')], 'spf.no-senders'), 'fail');
+    // `exp=` names an explanation string (RFC 7208 §6.2), it authorises nobody.
+    assert.equal(status([txt('@', 'v=spf1 -all exp=why.example')], 'spf.no-senders'), 'pass');
+    // Absence is `spf.present`'s failure. Counting it twice would punish the
+    // same missing record under two controls.
+    assert.equal(status([], 'spf.no-senders'), 'pass');
+    // A sending domain authorises its senders on purpose.
+    assert.equal(status(shared, 'spf.no-senders', { state: 'mail-active' }), 'na');
+  });
+
   test('the lookup budget is satisfied vacuously, never failed for absence', () => {
     const sending = { state: 'mail-active' };
     assert.equal(status([], 'spf.lookup-budget', sending), 'pass');

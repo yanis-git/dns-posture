@@ -190,13 +190,13 @@ node ovh.mjs compliance example.com      # one domain
 
 The classifier answers *"is this domain safe to harden?"*. The baseline answers *"what is the
 security posture of this portfolio, and what is the shortest path to improving it?"* — with
-twenty-three identified, weighted controls, each mapped to a published reference.
+twenty-four identified, weighted controls, each mapped to a published reference.
 
 It runs **offline, from the backups already on disk**, so it needs no credentials and the same
 backups always produce the same score.
 
 ```
-Compliance baseline v1.0.0 — 61 domain(s) from backups, offline
+Compliance baseline v1.1.0 — 61 domain(s) from backups, offline
 
 [  1/ 61] example.com                        B  86   spoof 100  closed  55  surface 100
 [  2/ 61] other.example                      F  31   !! 3 critical failure(s)

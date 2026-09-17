@@ -186,14 +186,14 @@ node ovh.mjs compliance example.com      # un seul domaine
 
 Le classifieur répond à la question « ce domaine peut-il être durci sans risque ? ». Le référentiel
 répond à une autre question : « quelle est la posture de sécurité de ce portefeuille, et quel est le
-chemin le plus court pour l'améliorer ? » — avec vingt-trois contrôles identifiés et pondérés,
+chemin le plus court pour l'améliorer ? » — avec vingt-quatre contrôles identifiés et pondérés,
 chacun rattaché à une référence publiée.
 
 Il s'exécute **hors ligne, à partir des sauvegardes déjà sur le disque** : aucun identifiant n'est
 requis, et les mêmes sauvegardes produisent toujours le même score.
 
 ```
-Compliance baseline v1.0.0 — 61 domain(s) from backups, offline
+Compliance baseline v1.1.0 — 61 domain(s) from backups, offline
 
 [  1/ 61] example.com                        B  86   spoof 100  closed  55  surface 100
 [  2/ 61] other.example                      F  31   !! 3 critical failure(s)

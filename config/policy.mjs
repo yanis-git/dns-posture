@@ -14,8 +14,8 @@
 //   records   what may be published, each naming the displacer that says what
 //             it competes with (the displacers themselves are a closed table
 //             in lib/zone.mjs — a config can turn one on, never widen one)
-//   checks    the audit metadata of the 23 controls: title, axis, severity, refs
-//   profiles  per classifier state, what each of the 23 checks does on failure
+//   checks    the audit metadata of the 24 controls: title, axis, severity, refs
+//   profiles  per classifier state, what each of the 24 checks does on failure
 //
 // Every check is declared in every profile, on purpose. Adding a control makes
 // this file fail validation until someone decides what it should do on a
@@ -146,6 +146,11 @@ export default Object.freeze({
       axis: 'spoofing', severity: 'critical',
       refs: ['RFC 7208 §5.1', 'ISO/IEC 27001:2022 A.5.14'],
     },
+    'spf.no-senders': {
+      title: 'A non-sending domain authorises no sender',
+      axis: 'spoofing', severity: 'high',
+      refs: ['RFC 7208 §4.6.2', 'ISO/IEC 27001:2022 A.5.14'],
+    },
     'spf.no-permissive': {
       title: 'SPF does not authorise the whole internet',
       axis: 'spoofing', severity: 'critical',
@@ -265,6 +270,7 @@ export default Object.freeze({
         'spf.present': { remedy: { action: 'enforce', record: 'spf.deny' } },
         'spf.single': { remedy: { action: 'enforce', record: 'spf.deny' } },
         'spf.hardfail': { remedy: { action: 'enforce', record: 'spf.deny' } },
+        'spf.no-senders': { remedy: { action: 'enforce', record: 'spf.deny' } },
         'spf.no-permissive': { remedy: { action: 'off' }, reason: 'scope: applies to sending domains' },
         'spf.lookup-budget': { remedy: { action: 'off' }, reason: 'scope: applies to sending domains' },
 
@@ -322,6 +328,7 @@ export default Object.freeze({
         'spf.present': { remedy: { action: 'enforce', record: 'spf.deny' } },
         'spf.single': { remedy: { action: 'enforce', record: 'spf.deny' } },
         'spf.hardfail': { remedy: { action: 'enforce', record: 'spf.deny' } },
+        'spf.no-senders': { remedy: { action: 'enforce', record: 'spf.deny' } },
         'spf.no-permissive': { remedy: { action: 'off' }, reason: 'scope: applies to sending domains' },
         'spf.lookup-budget': { remedy: { action: 'off' }, reason: 'scope: applies to sending domains' },
 
@@ -364,13 +371,14 @@ export default Object.freeze({
       // Nothing on a live sending zone is ours to delete — not even the legacy
       // `ftp` CNAME the defaults drop elsewhere. Emptying the list here is what
       // makes "this profile writes nothing" true of the whole plan and not just
-      // of the 23 remedies; a --force that lifts the guard still finds nothing
+      // of the 24 remedies; a --force that lifts the guard still finds nothing
       // to do.
       dropCnames: [],
       checks: {
         'spf.present': { remedy: { action: 'manual' } },
         'spf.single': { remedy: { action: 'manual' } },
         'spf.hardfail': { remedy: { action: 'off' }, reason: 'scope: a sending domain must not publish `-all`' },
+        'spf.no-senders': { remedy: { action: 'off' }, reason: 'scope: a sending domain authorises its senders on purpose' },
         'spf.no-permissive': { remedy: { action: 'manual' } },
         'spf.lookup-budget': { remedy: { action: 'manual' } },
 

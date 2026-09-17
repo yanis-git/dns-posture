@@ -12,8 +12,9 @@ import {
   parseCaa,
   recordLabel,
   sameRecord,
-  toZoneShape,
+  spfSenders,
   toApiShape,
+  toZoneShape,
   txtValue,
 } from '../lib/zone.mjs';
 
@@ -110,6 +111,32 @@ describe('isApexPolicyName', () => {
     for (const name of ['mg', '_dmarc.mg', 'email._domainkey.mg', 'www', '_domainkey.mg']) {
       assert.equal(isApexPolicyName(name), false, `should not own: ${name}`);
     }
+  });
+});
+
+describe('spfSenders', () => {
+  test('every term that authorises a host, and nothing else', () => {
+    assert.deepEqual(spfSenders('v=spf1 -all'), []);
+    assert.deepEqual(spfSenders('v=spf1 include:mx.ovh.com -all'), ['include:mx.ovh.com']);
+    assert.deepEqual(spfSenders('v=spf1 a mx ip4:203.0.113.0/24 ~all'), ['a', 'mx', 'ip4:203.0.113.0/24']);
+    // `redirect=` hands the whole policy to another domain: still a way in.
+    assert.deepEqual(spfSenders('v=spf1 redirect=_spf.example'), ['redirect=_spf.example']);
+  });
+
+  test('a qualifier does not make a mechanism harmless', () => {
+    // `-include:` narrows the answer to "fail" on a match, but the point here is
+    // that the domain names a sender at all — and `?` or `~` on a mechanism is
+    // very much a way in.
+    assert.deepEqual(spfSenders('v=spf1 ?include:x.example ~mx -all'), ['include:x.example', 'mx']);
+  });
+
+  test('`exp=` names an explanation string, not a sender', () => {
+    assert.deepEqual(spfSenders('v=spf1 -all exp=explain.example'), []);
+  });
+
+  test('the version tag is not a term', () => {
+    assert.deepEqual(spfSenders('v=spf1'), []);
+    assert.deepEqual(spfSenders('  v=spf1   -all  '), []);
   });
 });
 

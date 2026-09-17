@@ -533,7 +533,7 @@ describe('the findings-driven plan', () => {
   });
 
   test('not even the legacy ftp CNAME is deleted on a mail-active zone', () => {
-    // `dropCnames` is not a remedy, so it slipped past the 23 `manual`/`report`
+    // `dropCnames` is not a remedy, so it slipped past the `manual`/`report`
     // entries and deleted an `ftp` CNAME on a live sending zone — found by the
     // acceptance sweep over the real portfolio, not by a unit test. The profile
     // empties the list, which is why the merge has to let it.

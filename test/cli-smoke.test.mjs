@@ -296,7 +296,7 @@ describe('the policy subcommand', () => {
     assert.equal(code, 0, stdout);
     assert.match(stdout, /config\/policy\.mjs \(schema v1\) — valid/);
     assert.match(stdout, /Record templates \(6\)/);
-    assert.match(stdout, /Remedy per check \(23 checks × 3 profiles\)/);
+    assert.match(stdout, /Remedy per check \(24 checks × 3 profiles\)/);
     // The remedy of a check is the whole point of the file: show it, per profile.
     assert.match(stdout, /spf\.hardfail\s+enforce spf\.deny\s+enforce spf\.deny/);
   });
@@ -331,7 +331,7 @@ describe('the policy subcommand', () => {
     const { stdout } = await cli(['policy', 'dormant.example', '--json']);
     const out = JSON.parse(stdout);
     assert.equal(out.schemaVersion, 1);
-    assert.equal(out.checks.length, 23);
+    assert.equal(out.checks.length, 24);
     for (const rec of out.plan.create) assert.ok(rec.wantedBy.length, `${rec.label} was published by nothing`);
     for (const rec of out.plan.delete) assert.ok(rec.checkId, `${rec.label} was deleted by nothing`);
   });

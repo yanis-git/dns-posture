@@ -1,6 +1,6 @@
 # Compliance baseline
 
-The control baseline behind `node ovh.mjs compliance`. Twenty-three checks, each one identified,
+The control baseline behind `node ovh.mjs compliance`. Twenty-four checks, each one identified,
 weighted, and mapped to a published reference, evaluated offline against the zone backups in
 `storage/backups/`.
 
@@ -134,7 +134,8 @@ spreadsheet. Renaming one is a breaking change.
 |---|---|---|---|---|
 | `spf.present` | A `v=spf1` TXT exists at the apex. | critical | all | RFC 7208 §3 · ISO 27001 A.5.14 · NIS2 21(2)(g) |
 | `spf.single` | Exactly one. Two SPF records are a `PermError` and receivers ignore **both** — a second SPF is worse than none. | critical | all | RFC 7208 §4.5 |
-| `spf.hardfail` | The record ends in `-all`. Only the terminal qualifier counts; `include:` mechanisms before it are irrelevant. | critical | non-sending | RFC 7208 §5.1 · ISO 27001 A.5.14 |
+| `spf.hardfail` | The record ends in `-all`. Only the terminal qualifier counts; the mechanisms before it are `spf.no-senders`' business. | critical | non-sending | RFC 7208 §5.1 · ISO 27001 A.5.14 |
+| `spf.no-senders` | The record carries no mechanism at all, only `all`. `v=spf1 include:mx.ovh.com -all` ends in a hard fail and still lets every host in a shared provider's SPF send as the domain: mechanisms are read left to right and the first match wins, so `-all` only covers what is left over. | high | non-sending | RFC 7208 §4.6.2 · ISO 27001 A.5.14 |
 | `spf.no-permissive` | The record does not end in `+all` or `?all`, which authorise the whole internet. | critical | sending | RFC 7208 §5.1 |
 | `spf.lookup-budget` | At most 10 DNS-resolving mechanisms. Over budget, evaluation returns `PermError` and the policy stops being applied. | medium | sending | RFC 7208 §4.6.4 |
 | `dmarc.present` | Exactly one DMARC record on `_dmarc`. Duplicates are ignored by receivers. | critical | all | RFC 7489 §6.1 · ISO 27001 A.5.14 · NIS2 21(2)(g) |
@@ -206,6 +207,11 @@ CNAMEs it did not put there.
 ---
 
 ## Versioning
+
+| version | change |
+|---|---|
+| 1.1.0 | `spf.no-senders` added (high, non-sending). No zone in the portfolio failed it, but the extra passing weight moves every non-sending score a point or two. |
+| 1.0.0 | The first catalogue: 23 controls. |
 
 `BASELINE_VERSION` is stamped into every report. Adding a control, changing a weight or changing a
 scope changes a score without anything changing in DNS, so **compare two reports only when the
