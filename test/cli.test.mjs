@@ -23,7 +23,20 @@ describe('parseArgs', () => {
     assert.equal(o.force, undefined);
     assert.equal(o.dropRedirect, undefined);
     assert.equal(o.nullMx, false);
+    assert.ok(!o.caa, 'a CAA deny is opt-in: it can break certificate renewal');
+    assert.ok(!o.iodef);
     assert.deepEqual(o._, ['example.com']);
+  });
+
+  test('--caa is a flag of its own', () => {
+    assert.equal(parseArgs(['--caa']).caa, true);
+  });
+
+  test('--iodef implies --caa — an iodef alone closes nothing', () => {
+    const o = parseArgs(['--iodef', 'mailto:security@example.com']);
+    assert.equal(o.iodef, 'mailto:security@example.com');
+    assert.equal(o.caa, true);
+    assert.deepEqual(o._, [], 'the address must not be read as a domain');
   });
 
   test('boolean flags are recognised', () => {

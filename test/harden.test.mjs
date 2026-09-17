@@ -4,7 +4,7 @@
 
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildPolicy, planZone, applyPlan, recordLabel, DEFAULT_CNAMES_TO_DROP } from '../lib/harden.mjs';
+import { buildPolicy, planZone, applyPlan, fetchRecords, recordLabel, parseCaa, DEFAULT_CNAMES_TO_DROP } from '../lib/harden.mjs';
 
 globalThis.fetch = () => { throw new Error('no network in unit tests'); };
 
@@ -34,15 +34,64 @@ describe('buildPolicy', () => {
   });
 
   test('the TTL is applied to every record', () => {
-    assert.ok(buildPolicy({ ttl: 60, nullMx: true }).every((r) => r.ttl === 60));
+    assert.ok(buildPolicy({ ttl: 60, caa: true, nullMx: true }).every((r) => r.ttl === 60));
+  });
+
+  test('CAA is opt-in — a plain policy publishes none', () => {
+    assert.equal(buildPolicy().some((r) => r.fieldType === 'CAA'), false);
+    assert.equal(buildPolicy({ nullMx: true }).some((r) => r.fieldType === 'CAA'), false);
+  });
+
+  test('--caa publishes the deny pair, and nothing a CA could still use', () => {
+    const caa = buildPolicy({ caa: true }).filter((r) => r.fieldType === 'CAA');
+    assert.deepEqual(caa.map((r) => r.target), ['0 issue ";"', '0 issuewild ";"']);
+    assert.ok(caa.every((r) => r.subDomain === ''), 'a CAA deny belongs at the apex');
+  });
+
+  test('an iodef is published only when an address is given', () => {
+    assert.equal(buildPolicy({ caa: true }).some((r) => /iodef/.test(r.target)), false);
+    const iodef = buildPolicy({ caa: true, iodef: 'mailto:security@example.com' })
+      .find((r) => /iodef/.test(r.target));
+    assert.equal(iodef.target, '0 iodef "mailto:security@example.com"');
+  });
+
+  test('the three anti-spoofing records keep positions 0-2 whatever else is added', () => {
+    // Callers and tests index into this array; CAA and MX append, never insert.
+    const p = buildPolicy({ caa: true, nullMx: true, iodef: 'mailto:x@example.com' });
+    assert.deepEqual(subs(p).slice(0, 3), ['@', '_dmarc', '*._domainkey']);
+    assert.equal(p[0].target, 'v=spf1 -all');
+    assert.ok(p.every((r) => r.why), 'every record explains itself in the plan output');
+  });
+});
+
+describe('parseCaa', () => {
+  // Tolerance here is what keeps planZone idempotent: a quoting variant we fail
+  // to recognise reads as "different from the policy" and churns on every run.
+  test('reads every quoting variant OVH might hand back', () => {
+    for (const form of ['0 issue ";"', '0 issue ;', '"0 issue ;"', '0 "issue" ";"', '"0 issue \\";\\""']) {
+      const caa = parseCaa(form);
+      assert.equal(caa?.tag, 'issue', `tag lost on: ${form}`);
+      assert.equal(caa.flags, 0);
+    }
+  });
+
+  test('keeps the flags and lowercases the tag', () => {
+    assert.deepEqual(parseCaa('128 ISSUEWILD "letsencrypt.org"'),
+      { flags: 128, tag: 'issuewild', value: 'letsencrypt.org' });
+  });
+
+  test('returns null on something that is not a CAA at all', () => {
+    assert.equal(parseCaa('v=spf1 -all'), null);
+    assert.equal(parseCaa(''), null);
+    assert.equal(parseCaa(undefined), null);
   });
 });
 
 describe('planZone — what gets deleted', () => {
-  test('MX records are removed from a dormant domain', () => {
+  test('an apex MX is removed', () => {
     const p = plan([rec('MX', '', '10 mx1.mail.ovh.net.')]);
     assert.equal(p.delete.length, 1);
-    assert.match(p.delete[0].reason, /MX on a dormant domain/);
+    assert.match(p.delete[0].reason, /MX at the apex/);
   });
 
   test('stale SPF/DKIM/DMARC are replaced by the policy', () => {
@@ -84,13 +133,89 @@ describe('planZone — what is protected', () => {
   });
 
   test('--keep protects on the subdomain name too', () => {
-    const p = plan([rec('TXT', '_acme-challenge', 'token')], { keepPatterns: [/acme/i] });
-    assert.equal(p.delete.length, 0);
+    // Pinned on a _domainkey selector on purpose: an apex policy name, so it
+    // WOULD be deleted without --keep. `_acme-challenge` no longer proves
+    // anything here — the apex gate keeps it regardless.
+    const sel = rec('TXT', 'selector1._domainkey', 'v=DKIM1; p=MIGf');
+    assert.equal(plan([sel]).delete.length, 1);
+    assert.equal(plan([sel], { keepPatterns: [/selector1/i] }).delete.length, 0);
   });
 
   test('--keep wins over the MX rule', () => {
     const p = plan([rec('MX', '', '10 mx1.mail.ovh.net.')], { keepPatterns: [/mx1/] });
     assert.equal(p.delete.length, 0);
+  });
+});
+
+describe('the apex gate — a subdomain is not the apex', () => {
+  // The policy is published at the apex, so it may only remove what competes
+  // with it there. Before this gate existed, `planZone` filtered on the record
+  // TYPE alone and proposed deleting a delegated sending subdomain whole: its
+  // MX, its SPF, its DKIM key and its DMARC policy, all six records, on a zone
+  // whose mail was working. The reason it printed was `MX on a dormant domain`
+  // about a zone it had itself just classified mail-active.
+
+  /** A zone shaped like a domain that delegates sending to `mg.`, with a
+   *  stale apex policy that SHOULD still be replaced. */
+  const delegatedSender = () => [
+    rec('MX', 'mg', '10 mxa.eu.mailgun.org.'),
+    rec('MX', 'mg', '10 mxb.eu.mailgun.org.'),
+    rec('TXT', 'mg', 'v=spf1 include:mailgun.org ~all'),
+    rec('TXT', '_dmarc.mg', 'v=DMARC1; p=none; rua=mailto:r@example.com'),
+    rec('TXT', 'email._domainkey.mg', 'k=rsa; p=MIGfMA0GCS'),
+    rec('CNAME', 'email.mg', 'eu.mailgun.org.'),
+    rec('TXT', 'checker', 'google-site-verification=abc123'),
+    rec('TXT', '', 'v=spf1 ~all'),
+    rec('TXT', '_dmarc', 'v=DMARC1; p=none'),
+    rec('TXT', 'selector1._domainkey', 'v=DKIM1; p=MIGfMA0GCS'),
+  ];
+
+  test('not one record of the delegated sending subdomain is deleted', () => {
+    const p = plan(delegatedSender());
+    const doomed = p.delete.filter((r) => /(^|\.)mg$/.test(r.subDomain || ''));
+    assert.deepEqual(doomed, [], `would have deleted: ${doomed.map((r) => r.label).join(', ')}`);
+  });
+
+  test('a subdomain MX is never deleted — that is the one that broke mail', () => {
+    assert.equal(plan(delegatedSender()).delete.filter((r) => r.fieldType === 'MX').length, 0);
+  });
+
+  test('the stale apex policy IS still replaced', () => {
+    const p = plan(delegatedSender());
+    assert.deepEqual(subs(p.delete).sort(), ['@', '_dmarc', 'selector1._domainkey']);
+  });
+
+  test('a third-party verification TXT on a subdomain survives', () => {
+    const p = plan(delegatedSender());
+    assert.ok(p.keep.some((r) => r.subDomain === 'checker'));
+  });
+
+  test('_dmarc is ours, _dmarc.mg is not', () => {
+    const p = plan([rec('TXT', '_dmarc', 'v=DMARC1; p=none'), rec('TXT', '_dmarc.mg', 'v=DMARC1; p=none')]);
+    assert.deepEqual(subs(p.delete), ['_dmarc']);
+  });
+
+  test('sel._domainkey is ours, sel._domainkey.mg is not', () => {
+    const p = plan([rec('TXT', 'a._domainkey', 'v=DKIM1; p=x'), rec('TXT', 'a._domainkey.mg', 'v=DKIM1; p=x')]);
+    assert.deepEqual(subs(p.delete), ['a._domainkey']);
+  });
+
+  test('an in-flight ACME challenge is no longer swept away', () => {
+    // Deleting this mid-issuance fails the certificate request.
+    assert.equal(plan([rec('TXT', '_acme-challenge', 'token')]).delete.length, 0);
+  });
+
+  test('the kept record says why, so the operator is not left guessing', () => {
+    const p = plan([rec('MX', 'mg', '10 mxa.eu.mailgun.org.')]);
+    assert.match(p.keep[0].reason, /out of scope: mg is not an apex policy name/);
+  });
+
+  test('the gate does not make the plan churn: twice in a row is stable', () => {
+    const first = plan(delegatedSender());
+    const settled = [...first.keep, ...first.create.map((w) => rec(w.fieldType, w.subDomain, w.target))];
+    const second = plan(settled);
+    assert.deepEqual(second.delete, []);
+    assert.deepEqual(second.create, []);
   });
 });
 
@@ -202,6 +327,122 @@ describe('applyPlan', () => {
   });
 });
 
+describe('planZone and CAA', () => {
+  const caaPolicy = { policy: buildPolicy({ caa: true }) };
+  const labels = (list) => list.map((r) => r.label ?? recordLabel(r));
+
+  test('a CAA is NEVER deleted by a policy that publishes none', () => {
+    // The single most important line of the CAA work. Deleting a CAA without
+    // republishing one LOOSENS the zone: no CAA at all means every CA in the
+    // world may issue. A plain `harden` must leave it alone.
+    const caa = rec('CAA', '', '0 issue "letsencrypt.org"');
+    const out = plan([caa]);
+    assert.equal(out.delete.length, 0);
+    assert.equal(out.keep.find((r) => r.fieldType === 'CAA').reason, 'CAA out of scope (pass --caa)');
+  });
+
+  test('with --caa a permissive CAA is replaced by the deny pair', () => {
+    const out = plan([rec('CAA', '', '0 issue "letsencrypt.org"')], caaPolicy);
+    assert.equal(out.delete.length, 1);
+    assert.match(out.delete[0].reason, /replaced by the closed-by-default policy/);
+    assert.deepEqual(out.create.filter((r) => r.fieldType === 'CAA').map((r) => r.target),
+      ['0 issue ";"', '0 issuewild ";"']);
+  });
+
+  test('a zone already closed produces an empty plan — idempotence', () => {
+    const closed = buildPolicy({ caa: true })
+      .map((r) => rec(r.fieldType, r.subDomain, r.fieldType === 'TXT' ? `"${r.target}"` : r.target));
+    const out = plan(closed, caaPolicy);
+    assert.deepEqual(out.delete, []);
+    assert.deepEqual(out.create, []);
+    assert.equal(out.keep.filter((r) => r.reason === 'already compliant').length, 5);
+  });
+
+  test('a half-closed zone creates exactly the missing issuewild', () => {
+    const out = plan([rec('CAA', '', '0 issue ";"')], caaPolicy);
+    assert.equal(out.create.filter((r) => r.fieldType === 'CAA').length, 1);
+    assert.equal(out.create.find((r) => r.fieldType === 'CAA').target, '0 issuewild ";"');
+    assert.equal(out.delete.filter((r) => r.fieldType === 'CAA').length, 0);
+  });
+
+  test('no churn whichever way OVH quoted the stored value', () => {
+    for (const [issue, issuewild] of [
+      ['0 issue ";"', '0 issuewild ";"'],
+      ['0 issue ;', '0 issuewild ;'],
+      ['"0 issue ;"', '"0 issuewild ;"'],
+      ['0 "issue" ";"', '0 "issuewild" ";"'],
+    ]) {
+      const out = plan([rec('CAA', '', issue), rec('CAA', '', issuewild)], caaPolicy);
+      const touched = out.delete.filter((r) => r.fieldType === 'CAA').length
+        + out.create.filter((r) => r.fieldType === 'CAA').length;
+      assert.equal(touched, 0, `churned on: ${issue}`);
+    }
+  });
+
+  test('two policy entries never reconcile against the same record', () => {
+    // Only one CAA exists; issue and issuewild must not both claim it.
+    const out = plan([rec('CAA', '', '0 issue ";"')], caaPolicy);
+    assert.equal(out.keep.filter((r) => r.fieldType === 'CAA' && r.reason === 'already compliant').length, 1);
+  });
+
+  test('--keep protects a legitimate CAA even under --caa', () => {
+    const out = plan([rec('CAA', '', '0 issue "letsencrypt.org"')],
+      { ...caaPolicy, keepPatterns: [/letsencrypt/i] });
+    assert.equal(out.delete.length, 0);
+    assert.equal(out.keep[0].reason, 'protected by --keep');
+    // The deny is still published alongside it — by RFC 8659 the issue set is a
+    // union, so issuance stays allowed. printPlan warns about exactly this.
+    assert.ok(labels(out.create).some((l) => l.includes('0 issue ";"')));
+  });
+
+  test('a CAA on a subdomain is left alone — the policy only replaces the apex one', () => {
+    // Changed deliberately. The policy publishes `@ CAA`, so it replaces `@ CAA`.
+    // A CAA on www is a per-subdomain certificate decision someone made on
+    // purpose, and deleting it is a deletion with nothing put back in its place.
+    const out = plan([rec('CAA', 'www', '0 issue "letsencrypt.org"')], caaPolicy);
+    assert.equal(out.delete.length, 0);
+    assert.match(out.keep.find((r) => r.subDomain === 'www').reason, /not an apex policy name/);
+  });
+});
+
+describe('fetchRecords', () => {
+  const fakeZone = (byType) => ({
+    calls: [],
+    async get(path) {
+      this.calls.push(path);
+      const m = /fieldType=(\w+)/.exec(path);
+      if (m) {
+        const found = byType[m[1]];
+        if (found === undefined) { const e = new Error('Not found'); e.status = 404; throw e; }
+        if (found === 400) { const e = new Error('Bad enum'); e.status = 400; throw e; }
+        return found.map((_, i) => `${m[1]}-${i}`);
+      }
+      const [type, i] = path.split('/').pop().split('-');
+      return { id: path, fieldType: type, subDomain: '', target: byType[type][Number(i)] };
+    },
+  });
+
+  test('CAA is among the types queried', async () => {
+    const ovh = fakeZone({ CAA: ['0 issue ";"'] });
+    const records = await fetchRecords(ovh, 'example.com');
+    assert.ok(ovh.calls.some((c) => c.includes('fieldType=CAA')));
+    assert.deepEqual(records.map((r) => r.target), ['0 issue ";"']);
+  });
+
+  test('a 400 on an unknown fieldType skips the type instead of aborting the run', async () => {
+    // Seen on CAA: some accounts' API version does not know the enum value.
+    // Losing one type must not cost the whole batch.
+    const ovh = fakeZone({ TXT: ['"v=spf1 -all"'], CAA: 400 });
+    const records = await fetchRecords(ovh, 'example.com');
+    assert.deepEqual(records.map((r) => r.target), ['"v=spf1 -all"']);
+  });
+
+  test('anything other than a 404 or a 400 still propagates', async () => {
+    const ovh = { async get() { const e = new Error('rate limited'); e.status = 429; throw e; } };
+    await assert.rejects(() => fetchRecords(ovh, 'example.com'), /rate limited/);
+  });
+});
+
 describe('recordLabel', () => {
   test('does not double the quotes OVH already puts around a TXT target', () => {
     assert.equal(recordLabel({ subDomain: '', fieldType: 'TXT', target: '"v=spf1 -all"' }), '@ TXT "v=spf1 -all"');
@@ -213,5 +454,12 @@ describe('recordLabel', () => {
 
   test('only a surrounding quote pair is stripped, not inner ones', () => {
     assert.equal(recordLabel({ subDomain: '@', fieldType: 'TXT', target: 'a "b" c' }), '@ TXT "a "b" c"');
+  });
+
+  test('a structured target carries its own quoting and gets none added', () => {
+    // `@ CAA "0 issue ";""` is unreadable and does not round-trip.
+    assert.equal(recordLabel({ subDomain: '', fieldType: 'CAA', target: '0 issue ";"' }), '@ CAA 0 issue ";"');
+    assert.equal(recordLabel({ subDomain: '', fieldType: 'MX', target: '0 .' }), '@ MX 0 .');
+    assert.equal(recordLabel({ subDomain: 'ftp', fieldType: 'CNAME', target: 'example.com.' }), 'ftp CNAME example.com.');
   });
 });

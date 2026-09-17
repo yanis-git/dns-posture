@@ -1,7 +1,7 @@
 {
   "name": "ovh-domain-manager",
-  "version": "0.1.0",
-  "description": "Inventory, back up and harden dormant OVH domains against email spoofing",
+  "version": "0.2.0",
+  "description": "Attack-surface reduction and default-deny DNS hardening for a portfolio of OVHcloud domains: inventory dormant domains, score them against a compliance baseline mapped to RFC/ISO 27001/NIS2/ANSSI references, and publish anti-spoofing records",
   "type": "module",
   "private": true,
   "license": "MIT",
@@ -25,11 +25,21 @@
   },
   "keywords": [
     "ovh",
+    "ovhcloud",
     "dns",
+    "dns-security",
+    "email-security",
     "spf",
     "dkim",
     "dmarc",
+    "caa",
     "spoofing",
-    "domain"
+    "domain",
+    "compliance",
+    "attack-surface",
+    "default-deny",
+    "anssi",
+    "nis2",
+    "iso27001"
   ]
 }

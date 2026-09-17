@@ -1,15 +1,19 @@
 #!/usr/bin/env node
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import { OvhClient } from './lib/ovh-client.mjs';
 import { buildPolicy, fetchRecords, planZone, applyPlan, recordLabel } from './lib/harden.mjs';
 import { parseZone, classify } from './lib/inventory.mjs';
-import { renderInventory, readTicks, tickDomain, saveBackup, latestBackup } from './lib/report.mjs';
+import {
+  renderInventory, readTicks, tickDomain, saveBackup, latestBackup,
+  renderCompliance, renderComplianceCsv,
+} from './lib/report.mjs';
+import { evaluate, aggregate, caaBlocker, BASELINE_VERSION, SEVERITY_WEIGHT } from './lib/baseline.mjs';
 import { parseArgs, requireDomain, findCsv, readCsvDomains, readListFile } from './lib/cli.mjs';
 import { loadEnv, ensureStorage, requireCredentials } from './lib/config.mjs';
 
-export const VERSION = '0.1.0';
+export const VERSION = '0.2.0';
 
 const ACCESS_RULES = [
   { method: 'GET', path: '/me' },
@@ -95,6 +99,81 @@ function cmdInventory(opts, p) {
   console.log(`Inventory rebuilt from backups (${entries.length} domains, ticks preserved): ${p.inventoryMd}`);
 }
 
+/**
+ * Score the whole portfolio against the control baseline, offline.
+ *
+ * Mirrors `cmdInventory`: it re-reads the on-disk backups, so it needs neither
+ * credentials nor network, and it never writes to the inventory — a compliance
+ * run must not be able to disturb the hand-ticked worklist.
+ */
+function cmdCompliance(opts, p) {
+  const domains = opts._.length ? opts._.map((d) => d.toLowerCase()) : readCsvDomains(findCsv(opts, p.storage));
+
+  console.log(`Compliance baseline v${BASELINE_VERSION} — ${domains.length} domain(s) from backups, offline\n`);
+
+  const reports = domains.map((domain, i) => {
+    const prefix = `[${String(i + 1).padStart(3)}/${domains.length}] ${domain.padEnd(34)}`;
+    const file = latestBackup(p.backups, domain);
+    if (!file) {
+      console.log(`${prefix} !! no backup — run \`snapshot\``);
+      return { domain, state: 'error', score: null, grade: null, controls: [], error: 'no backup — run `snapshot`' };
+    }
+    const records = parseZone(readFileSync(file, 'utf8'));
+    const report = { ...evaluate(records, { domain }), source: relative(p.storage, file) };
+    const critical = report.controls.filter((c) => c.status === 'fail' && c.severity === 'critical').length;
+    const tail = critical
+      ? `!! ${critical} critical failure(s)`
+      : `spoof ${String(report.axes.spoofing.score ?? '—').padStart(3)}`
+        + `  closed ${String(report.axes.closed.score ?? '—').padStart(3)}`
+        + `  surface ${String(report.axes.surface.score ?? '—').padStart(3)}`;
+    console.log(`${prefix} ${report.grade}${String(report.score).padStart(4)}   ${tail}`);
+    return report;
+  });
+
+  const portfolio = aggregate(reports);
+  const audit = {
+    generatedAt: new Date().toISOString(),
+    baselineVersion: BASELINE_VERSION,
+    weights: SEVERITY_WEIGHT,
+    portfolio,
+    domains: reports,
+  };
+
+  writeFileSync(p.complianceJson, JSON.stringify(audit, null, 2));
+  writeFileSync(p.complianceMd, renderCompliance(audit));
+  writeFileSync(p.complianceCsv, renderComplianceCsv(audit));
+
+  const grades = Object.entries(portfolio.byGrade).sort(([a], [b]) => a.localeCompare(b))
+    .map(([g, n]) => `${g}:${n}`).join(' ');
+  console.log(`\n== portfolio ${portfolio.score ?? '—'}/100 (${portfolio.grade ?? '—'}) · ${grades}`
+    + (portfolio.errors ? ` · ${portfolio.errors} without backup` : ''));
+  console.log(`   anti-spoofing ${portfolio.axes.spoofing ?? '—'} · closed by default ${portfolio.axes.closed ?? '—'}`
+    + ` · attack surface ${portfolio.axes.surface ?? '—'}`);
+  if (portfolio.topFailures.length) {
+    console.log(`   top failure: ${portfolio.topFailures.slice(0, 3).map((f) => `${f.id} (${f.count})`).join(' · ')}`);
+  }
+  console.log(`\nReport: ${p.complianceMd}\n        ${p.complianceJson}\n        ${p.complianceCsv}`);
+}
+
+/**
+ * Resolve --caa against the zone itself.
+ *
+ * A CAA at the apex is inherited by every subdomain (RFC 8659 §3), so a deny on
+ * a zone that still serves web content breaks the next certificate renewal —
+ * sixty to ninety days later, long after anyone connects the two. The flag asks;
+ * the zone decides. One predicate, shared with the compliance baseline, so the
+ * audit and the write path can never disagree about what is safe.
+ */
+function resolveCaa(opts, snap, log) {
+  if (!opts.caa) return false;
+  const blocked = caaBlocker(snap.records, snap);
+  if (blocked) {
+    log(`   caa    : skipped — ${blocked}`);
+    return false;
+  }
+  return true;
+}
+
 function printPlan(zone, plan) {
   console.log(`\n== ${zone}`);
   for (const rec of plan.delete) console.log(`   - DELETE  ${rec.label}  -> ${rec.reason}`);
@@ -106,6 +185,14 @@ function printPlan(zone, plan) {
     console.log(`   . KEEP    ${recordLabel(rec)}  -> ${rec.reason}`);
   }
   if (!plan.delete.length && !plan.create.length) console.log('   OK zone already compliant, nothing to do');
+
+  // RFC 8659 §4.2: the `issue` properties form a union. A permissive record
+  // kept by --keep therefore still authorises its CA, deny pair or not.
+  const keptPermissive = plan.keep.some((r) => r.fieldType === 'CAA'
+    && /^"?\s*\d+\s+issuewild?\s+"?\s*[^";\s]/i.test(String(r.target ?? '')));
+  if (keptPermissive && plan.create.some((r) => r.fieldType === 'CAA')) {
+    console.log('   !! a permissive CAA is kept alongside the deny — issuance is still allowed');
+  }
 }
 
 async function cmdHarden(opts, p) {
@@ -132,7 +219,13 @@ async function cmdHarden(opts, p) {
       + '   Hardening would break both delivery AND sending. Re-run with --force if that is intended.');
   }
 
-  const policy = buildPolicy({ rua: opts.rua, nullMx: opts.nullMx, ttl: opts.ttl || 3600 });
+  const policy = buildPolicy({
+    rua: opts.rua,
+    nullMx: opts.nullMx,
+    caa: resolveCaa(opts, snap, console.log),
+    iodef: opts.iodef,
+    ttl: opts.ttl || 3600,
+  });
   const records = await fetchRecords(ovh, zone);
   const plan = planZone(records, { policy, keepPatterns: opts.keep, cnamesToDrop: opts.cnames, dropRedirect: opts.dropRedirect });
   printPlan(zone, plan);
@@ -174,6 +267,8 @@ function writeBatchReport(rows, mode, opts, p) {
     options: {
       dropRedirect: !!opts.dropRedirect,
       nullMx: !!opts.nullMx,
+      caa: !!opts.caa,
+      iodef: opts.iodef || null,
       ttl: opts.ttl || 3600,
       rua: opts.rua || null,
       keep: opts.keep.map((re) => re.source),
@@ -224,7 +319,6 @@ async function cmdHardenBatch(opts, p) {
     ? `APPLYING in batch — ${domains.length} domain(s)\n`
     : `DRY-RUN in batch — ${domains.length} domain(s), add --apply to execute\n`);
 
-  const policy = buildPolicy({ rua: opts.rua, nullMx: opts.nullMx, ttl: opts.ttl || 3600 });
   const rows = [];
 
   for (const [i, domain] of domains.entries()) {
@@ -248,6 +342,13 @@ async function cmdHardenBatch(opts, p) {
     }
 
     try {
+      // Built per domain: --caa is resolved against each zone, so one zone
+      // serving web content cannot disable the deny for the whole batch, and
+      // cannot have it forced on either.
+      const caa = resolveCaa(opts, snap, (line) => console.log(`${' '.repeat(14)}${line.trim()}`));
+      const policy = buildPolicy({
+        rua: opts.rua, nullMx: opts.nullMx, caa, iodef: opts.iodef, ttl: opts.ttl || 3600,
+      });
       const records = await fetchRecords(ovh, domain);
       const plan = planZone(records, {
         policy, keepPatterns: opts.keep, cnamesToDrop: opts.cnames, dropRedirect: opts.dropRedirect,
@@ -316,12 +417,19 @@ ovh-domain-manager — anti-spoofing DNS hardening for dormant domains
   node ovh.mjs snapshot                Back up + inventory EVERY domain in the CSV
   node ovh.mjs snapshot <domain>       Same, for a single domain
   node ovh.mjs inventory               Rebuild the inventory (offline, keeps ticks)
+  node ovh.mjs compliance              Score the portfolio against the baseline (offline)
+  node ovh.mjs compliance <domain>     Same, for a single domain
   node ovh.mjs audit <domain>          Dump the current zone
   node ovh.mjs harden <domain>         Plan (dry-run by default)
   node ovh.mjs harden <domain> --apply
   node ovh.mjs harden-batch --list <file>          Plan for a whole batch (dry-run by default)
   node ovh.mjs harden-batch --list <file> --apply
   node ovh.mjs restore <domain> [f]    Re-import the latest backup (dry-run by default)
+
+inventory/compliance: offline, no credentials needed — they read <storage>/backups/.
+compliance: 23 controls over anti-spoofing / closed-by-default / attack surface, scored
+            per domain against the posture expected of its state. Writes
+            <storage>/compliance.{md,json,csv}. See docs/BASELINE.md.
 
 harden/audit/restore: exactly one domain per run.
 harden-batch: iterates over a batch, skips zones with active mail, refuses --force.
@@ -331,6 +439,9 @@ Options:
   --apply              Actually execute (dry-run otherwise)
   --force              Bypass the "active mail" guard rail
   --null-mx            Also try an MX "0 ." (RFC 7505) — OVH may refuse it
+  --caa                Publish a CAA deny: no CA may issue (RFC 8659). Opt-in —
+                       skipped automatically on a zone that serves web content
+  --iodef <mailto:...> CAA violation report address (implies --caa)
   --rua <mailto:...>   DMARC aggregate report address (none by default)
   --keep <regex>       Protect records whose name/value matches (repeatable)
   --drop-cname a,b     CNAMEs to delete on top of ftp
@@ -361,6 +472,7 @@ export async function main(argv) {
   else if (cmd === 'whoami') await cmdWhoami();
   else if (cmd === 'snapshot') await cmdSnapshot(opts, p);
   else if (cmd === 'inventory') cmdInventory(opts, p);
+  else if (cmd === 'compliance') cmdCompliance(opts, p);
   else if (cmd === 'audit') await cmdAudit(opts);
   else if (cmd === 'harden') await cmdHarden(opts, p);
   else if (cmd === 'harden-batch') await cmdHardenBatch(opts, p);

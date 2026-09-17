@@ -67,18 +67,76 @@ Opt-in because:
 - OVH refuses the record on some zones;
 - it is genuinely destructive if anyone still receives mail there.
 
+## `CAA @` — `0 issue ";"` / `0 issuewild ";"` (optional, `--caa`)
+
+RFC 8659: a CAA record names the certificate authorities allowed to issue for a domain. The value
+`;` is the empty authority list — it names none, so **no CA may issue at all**. `issuewild` says
+the same about wildcard certificates. On a domain nobody uses, that closes a door that is
+otherwise wide open: with no CAA record at all, every publicly trusted CA on earth may issue for
+the name, and a mis-issued certificate for a domain nobody monitors is a convincing phishing
+asset.
+
+`--iodef mailto:you@example.com` adds a third record asking CAs to report attempted violations.
+It implies `--caa`, since an iodef address on its own publishes nothing that closes anything.
+
+### Why it is opt-in, when SPF and DMARC are not
+
+A CAA record at the apex governs **every** subdomain by inheritance. Publish a deny on a zone that
+still needs a certificate and issuance stops — but not visibly, and not now. It surfaces 60 to 90
+days later when something tries to renew, long after the change that caused it has been forgotten.
+That failure mode is why this is a flag and not a default, and why OVH documents the conflict with
+Let's Encrypt on their web hosting.
+
+`harden` refuses to publish a deny — printing `caa    : skipped — <reason>` — when any of:
+
+- the zone classifies as `web-active`;
+- it carries an OVH web-redirection marker;
+- an `_acme-challenge` TXT is present, meaning a certificate is being issued right now;
+- the apex or `www` still resolves to a host outside OVH's parking range.
+
+The same predicate drives the `n/a` verdict on the CAA controls in the compliance baseline: one
+rule, two consumers, so the audit and the writer can never disagree about whether a deny is safe.
+
+### An existing CAA is never deleted on its own
+
+Deleting a CAA record without publishing one **loosens** the zone: no CAA means any CA may issue.
+So `planZone` only ever touches an existing CAA when the policy replaces it. Without `--caa` it is
+reported as `. KEEP … -> CAA out of scope (pass --caa)`.
+
+One corollary of RFC 8659 §4.2 worth knowing: the `issue` properties form a **union**. Keeping a
+permissive `0 issue "letsencrypt.org"` with `--keep` while publishing a deny leaves Let's Encrypt
+authorised — safe, but not what the flag name suggests, so `printPlan` warns about it explicitly.
+
+### The failure window
+
+`applyPlan` deletes before it creates. If OVH rejects the CAA creation, the zone is left with **no
+CAA at all** — more permissive than before, not broken, and `restore` puts it back. That ordering
+is acceptable here precisely because the failure direction is "open" rather than "unreachable".
+
+> **Unverified against the OVH API.** Neither OVH's documentation nor the Terraform provider
+> states the `target` syntax for `fieldType: CAA`, so the value published is the zone-file form.
+> Confirm it on a throwaway zone before the first `--apply --caa`.
+
 ## What `harden` removes, and why
 
-- **All MX records** — a dormant domain needs none, and a leftover MX keeps inbound mail flowing
-  to a mailbox nobody reads.
-- **All TXT/SPF/DKIM/DMARC** — replaced wholesale by the policy above. Keeping a permissive old
-  SPF alongside a new restrictive one is worse than either.
+Only at the apex. The policy publishes at the apex, so it may only remove what competes with what
+it publishes: `@`, `_dmarc`, and `<selector>._domainkey`.
+
+- **The apex MX records** — a dormant domain needs none, and a leftover MX keeps inbound mail
+  flowing to a mailbox nobody reads.
+- **The apex TXT/SPF/DKIM/DMARC** — replaced wholesale by the policy above. Keeping a permissive
+  old SPF alongside a new restrictive one is worse than either.
 - **The `ftp` CNAME** — legacy hosting plumbing, no reason to advertise it.
 
 ## What it deliberately does not touch
 
 - **OVH web-redirect markers** (TXT shaped `3|www.example.com`). Not mail records; deleting them
   breaks a live redirect. `--drop-redirect` if you want them gone.
+- **Everything on a subdomain.** `mg MX`, `mg TXT "v=spf1 include:…"`, `_dmarc.mg`,
+  `email._domainkey.mg` — a domain that delegates its mail to an ESP subdomain keeps sending after
+  a `harden`, because none of those names is an apex policy name. They are reported as
+  `out of scope: mg is not an apex policy name`. Note the consequence: hardening the apex says
+  nothing about the subdomain's posture, which you still have to audit on its own.
 - **A/AAAA/CNAME records** other than `ftp`. A dormant domain may still legitimately serve a
   redirect or a landing page.
 - **Anything matching `--keep`** — ACME challenges and domain-verification TXT records are the
@@ -91,6 +149,7 @@ Opt-in because:
 dig +short TXT example.com
 dig +short TXT _dmarc.example.com
 dig +short TXT '*._domainkey.example.com'
+dig +short CAA example.com          # only if you passed --caa
 ```
 
 Give it a TTL's worth of time (an hour by default) and check with any DMARC inspector. The domain

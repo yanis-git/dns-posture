@@ -63,7 +63,7 @@ jobs:
       - name: No zone dumps, CSV exports or credentials tracked
         run: |
           set -euo pipefail
-          bad=$(git ls-files | grep -Ei '(^|/)\.env$|\.zone$|\.csv$|(^|/)inventory\.(md|json)$' || true)
+          bad=$(git ls-files | grep -Ei '(^|/)\.env$|\.zone$|\.csv$|(^|/)(inventory|compliance)\.(md|json)$' || true)
           if [ -n "$bad" ]; then
             echo "::error::operational data must not be committed:"
             echo "$bad"
@@ -74,7 +74,8 @@ jobs:
       - name: .gitignore actually covers the sensitive paths
         run: |
           set -euo pipefail
-          for path in .env storage/backups/example.com/x.zone storage/inventory.md; do
+          for path in .env storage/backups/example.com/x.zone storage/inventory.md \
+                      storage/compliance.md storage/compliance.json storage/compliance.csv; do
             if ! git check-ignore -q "$path"; then
               echo "::error::$path is NOT ignored by .gitignore"
               exit 1

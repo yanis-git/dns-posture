@@ -4,9 +4,9 @@ Guidance for coding agents and contributors working in this repository.
 
 ## What this is
 
-A zero-dependency Node CLI that inventories OVH domains and publishes an anti-spoofing DNS policy
-on the dormant ones. It deletes DNS records in production. Treat every change to `lib/harden.mjs`
-and `lib/inventory.mjs` as safety-critical.
+A zero-dependency Node CLI that inventories OVH domains, scores them against a compliance
+baseline, and publishes an anti-spoofing DNS policy on the dormant ones. It deletes DNS records in
+production. Treat every change to `lib/harden.mjs` and `lib/inventory.mjs` as safety-critical.
 
 ## Layout
 
@@ -15,6 +15,7 @@ ovh.mjs               CLI entrypoint: subcommand dispatch, orchestration, report
 lib/ovh-client.mjs    Signed OVH v1 API client (no retry, no backoff — callers pace themselves)
 lib/inventory.mjs     Zone-file parser + dormant/web-active/mail-active classifier
 lib/harden.mjs        Policy engine: buildPolicy / planZone / applyPlan
+lib/baseline.mjs      Compliance control catalogue + scoring (pure, offline, no I/O)
 lib/report.mjs        Inventory markdown rendering + the backup store
 lib/cli.mjs           Argument parsing, CSV and batch-file readers
 lib/config.mjs        Path resolution and credential loading
@@ -38,6 +39,17 @@ snapshotDomain(ovh, domain)
 `harden-batch`. Every path that mutates a zone goes through it first, which is what guarantees a
 backup exists before any deletion.
 
+`inventory` and `compliance` share a second, offline path that never opens a socket:
+
+```
+latestBackup()  ->  readFileSync()  ->  parseZone()  ->  classify()          ->  renderInventory()
+                                                     ->  evaluate()/aggregate()  ->  renderCompliance()
+```
+
+Neither builds a client, so both run with no credentials and no network — which is also what makes
+them testable end-to-end in the smoke suite. Module direction is
+`report -> baseline -> {inventory, harden}`, and it must stay acyclic.
+
 ## Invariants — do not weaken these
 
 1. **Dry-run is the default.** No command writes to OVH without an explicit `--apply`.
@@ -55,7 +67,23 @@ backup exists before any deletion.
 7. **`--keep` wins over every deletion rule**, including MX.
 8. **No runtime dependencies.** Node builtins and global `fetch` only. Dev dependencies (ESLint)
    are fine.
-9. **Nothing from `storage/` or `.env` is ever committed.** `storage/` holds real DNS zone dumps,
+9. **A CAA record is never deleted unless the policy republishes one.** A bare deletion *loosens*
+   the zone — no CAA at all means every CA may issue. `planZone` keeps an existing CAA when the
+   policy carries none.
+10. **`planZone` only deletes records the apex policy owns.** The policy publishes at the apex, so
+   the names it may remove are `@`, `_dmarc` and `<selector>._domainkey` — and no others. The
+   record *type* cannot decide this: `mg MX` and `@ MX` are both MX, but only the second competes
+   with the policy; the first is a delegated sending subdomain, and deleting it takes the
+   customer's mail with it. That is not hypothetical — a dry-run on a real zone proposed exactly
+   that. `isApexPolicyName` in `lib/harden.mjs` is the gate; keep its suffix test, which is what
+   separates `sel._domainkey` (ours) from `email._domainkey.mg` (the subdomain's).
+11. **A control returns `na` because of the zone's use, never because a record is missing.** A
+   missing record is a `fail`. The test is whether absence satisfies the property: a control that
+   *asserts* one fails when the record is absent (no SPF means forged mail is not rejected, so
+   `spf.hardfail` fails); a control that *bounds* one is satisfied vacuously (a record that does
+   not exist cannot be permissive, so `spf.no-permissive` passes). Never use `na` as a softer
+   `fail`.
+12. **Nothing from `storage/` or `.env` is ever committed.** `storage/` holds real DNS zone dumps,
    registrant CSV exports and generated reports. CI fails the build if any is tracked.
 
 ## Testing rules
@@ -76,6 +104,10 @@ backup exists before any deletion.
 - Comments explain *why*, especially where a rule looks arbitrary — most of them encode an OVH
   quirk (dedicated `SPF`/`DKIM`/`DMARC` fieldTypes, MX Plan sharing the default MX hosts, the
   redirect marker format).
+- **Control ids are a public interface.** They are written into `compliance.json` and
+  `compliance.csv` and end up in other people's spreadsheets and remediation plans. Renaming one
+  is a breaking change; add a new control instead. Changing a weight, a scope or the catalogue
+  changes every score without any DNS changing, so bump `BASELINE_VERSION` when you do.
 - Classifier state keys are `dormant` / `web-active` / `mail-active` / `error`. They are written
   into `inventory.json` and consumed by `lib/report.mjs`; renaming one means migrating both.
 
@@ -86,13 +118,19 @@ backup exists before any deletion.
 | Add a mail provider to detect | `REAL_MAIL` in `lib/inventory.mjs` |
 | Change what the policy publishes | `buildPolicy` in `lib/harden.mjs` |
 | Change what gets deleted | `planZone` in `lib/harden.mjs` |
+| Add a compliance control | `CONTROLS` in `lib/baseline.mjs`, a case in `test/baseline.test.mjs`, a row in `docs/BASELINE.md` |
+| Change the scoring | `SEVERITY_WEIGHT` / `GRADE_BANDS` in `lib/baseline.mjs` — then bump `BASELINE_VERSION` |
 | Add a CLI flag | `parseArgs` in `lib/cli.mjs`, then the `HELP` text and the README option table |
 | Add a subcommand | a `cmdX` function in `ovh.mjs`, the dispatch in `main`, `HELP`, the README |
 
 ## Manual verification against a real account
 
 Read-only, safe to run: `node ovh.mjs whoami`, `node ovh.mjs audit <domain>`,
-`node ovh.mjs snapshot <domain>`, `node ovh.mjs inventory`.
+`node ovh.mjs snapshot <domain>`, `node ovh.mjs inventory`, `node ovh.mjs compliance`.
+
+`--caa` publishes a record whose OVH `target` syntax is **not documented and not yet verified
+against a live account** (see the note in `buildPolicy`). Confirm it on a throwaway zone before
+any `--apply --caa`.
 
 Never run `--apply` against someone's account to check a change. Use a domain you own and can
 restore, and confirm `node ovh.mjs restore <domain>` shows a usable backup first.

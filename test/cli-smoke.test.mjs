@@ -108,33 +108,36 @@ describe('guard rails', () => {
   });
 });
 
-describe('offline inventory', () => {
-  const ZONES = {
-    'dormant.example': [
-      '$TTL 3600',
-      '@\tIN SOA dns101.ovh.net. tech.ovh.net. (2088953526 86400 3600 3600000 60)',
-      '   3600 IN TXT     "v=spf1 -all"',
-      '_dmarc   3600 IN TXT     "v=DMARC1; p=reject; sp=reject; adkim=s; aspf=s"',
-    ].join('\n'),
-    'mail.example': [
-      '$TTL 3600',
-      '@ 3600 IN MX 10 aspmx.l.google.com.',
-    ].join('\n'),
-    'web.example': [
-      '$TTL 3600',
-      'www 3600 IN A 203.0.113.10',
-    ].join('\n'),
-  };
+// The shared zone fixture: one dormant, one mail-active, one web-active, plus a
+// domain in the CSV with no backup at all. `inventory` and `compliance` read the
+// same backups, so they read the same fixture.
+const ZONES = {
+  'dormant.example': [
+    '$TTL 3600',
+    '@\tIN SOA dns101.ovh.net. tech.ovh.net. (2088953526 86400 3600 3600000 60)',
+    '   3600 IN TXT     "v=spf1 -all"',
+    '_dmarc   3600 IN TXT     "v=DMARC1; p=reject; sp=reject; adkim=s; aspf=s"',
+  ].join('\n'),
+  'mail.example': [
+    '$TTL 3600',
+    '@ 3600 IN MX 10 aspmx.l.google.com.',
+  ].join('\n'),
+  'web.example': [
+    '$TTL 3600',
+    'www 3600 IN A 203.0.113.10',
+  ].join('\n'),
+};
 
-  function seedBackups() {
-    for (const [domain, zone] of Object.entries(ZONES)) {
-      const dir = join(storage, 'backups', domain);
-      mkdirSync(dir, { recursive: true });
-      writeFileSync(join(dir, '2026-01-01T00-00-00-000Z.zone'), zone);
-    }
-    writeFileSync(join(storage, 'domains.csv'), ['Domain', ...Object.keys(ZONES), 'never-seen.example'].join('\n'));
+function seedBackups() {
+  for (const [domain, zone] of Object.entries(ZONES)) {
+    const dir = join(storage, 'backups', domain);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, '2026-01-01T00-00-00-000Z.zone'), zone);
   }
+  writeFileSync(join(storage, 'domains.csv'), ['Domain', ...Object.keys(ZONES), 'never-seen.example'].join('\n'));
+}
 
+describe('offline inventory', () => {
   test('rebuilds the inventory from backups with no network and no credentials', async () => {
     seedBackups();
     const { code, stdout } = await cli(['inventory']);
@@ -179,5 +182,109 @@ describe('offline inventory', () => {
     assert.ok(existsSync(join(storage, 'backups')));
     assert.ok(existsSync(join(storage, 'reports')));
     assert.ok(existsSync(join(storage, 'inventory.md')));
+  });
+});
+
+describe('compliance — the offline portfolio audit', () => {
+  test('it runs with no credentials, no network, and exits 0', async () => {
+    seedBackups();
+    const { code, stdout } = await cli(['compliance']);
+    assert.equal(code, 0);
+    assert.match(stdout, /Compliance baseline v\d+\.\d+\.\d+/);
+    assert.match(stdout, /offline/);
+  });
+
+  test('it writes the three deliverables', async () => {
+    seedBackups();
+    await cli(['compliance']);
+    for (const f of ['compliance.md', 'compliance.json', 'compliance.csv']) {
+      assert.ok(existsSync(join(storage, f)), `${f} was not written`);
+    }
+  });
+
+  test('a dormant zone is scored and graded', async () => {
+    seedBackups();
+    await cli(['compliance']);
+    const json = JSON.parse(readFileSync(join(storage, 'compliance.json'), 'utf8'));
+    const dormant = json.domains.find((d) => d.domain === 'dormant.example');
+    assert.equal(dormant.state, 'dormant');
+    assert.equal(typeof dormant.score, 'number');
+    assert.match(dormant.grade, /^[A-F]$/);
+    assert.ok(dormant.controls.length >= 20, 'the whole catalogue should be evaluated');
+  });
+
+  test('every domain is audited whatever its state — not just the dormant ones', async () => {
+    seedBackups();
+    await cli(['compliance']);
+    const json = JSON.parse(readFileSync(join(storage, 'compliance.json'), 'utf8'));
+    const states = Object.fromEntries(json.domains.map((d) => [d.domain, d.state]));
+    assert.equal(states['web.example'], 'web-active');
+    assert.equal(states['mail.example'], 'mail-active');
+    assert.equal(states['never-seen.example'], 'error');
+  });
+
+  test('a domain with no backup is excluded from the average, not scored zero', async () => {
+    seedBackups();
+    await cli(['compliance']);
+    const { portfolio, domains } = JSON.parse(readFileSync(join(storage, 'compliance.json'), 'utf8'));
+    const missing = domains.find((d) => d.domain === 'never-seen.example');
+    assert.equal(missing.score, null);
+    assert.match(missing.error, /no backup/);
+    assert.equal(portfolio.errors, 1);
+    assert.equal(portfolio.scored, domains.length - 1);
+
+    const scored = domains.filter((d) => typeof d.score === 'number');
+    const mean = Math.round(scored.reduce((sum, d) => sum + d.score, 0) / scored.length);
+    assert.equal(portfolio.score, mean);
+  });
+
+  test('the console prints the portfolio score and the axes', async () => {
+    seedBackups();
+    const { stdout } = await cli(['compliance']);
+    assert.match(stdout, /portfolio \d+\/100 \([A-F]\)/);
+    assert.match(stdout, /anti-spoofing \d+ · closed by default \d+ · attack surface \d+/);
+  });
+
+  test('a single domain can be audited on its own', async () => {
+    seedBackups();
+    await cli(['compliance', 'dormant.example']);
+    const json = JSON.parse(readFileSync(join(storage, 'compliance.json'), 'utf8'));
+    assert.deepEqual(json.domains.map((d) => d.domain), ['dormant.example']);
+  });
+
+  // The inventory is a worklist people tick by hand. A read-only audit that
+  // rewrote it would silently reorder lines under someone's cursor.
+  test('it leaves inventory.md byte-identical', async () => {
+    seedBackups();
+    await cli(['inventory']);
+    const path = join(storage, 'inventory.md');
+    writeFileSync(path, readFileSync(path, 'utf8').replace('- [ ] **dormant.example**', '- [x] **dormant.example**'));
+    const before = readFileSync(path);
+
+    await cli(['compliance']);
+    assert.deepEqual(readFileSync(path), before);
+  });
+
+  test('the CSV is one row per (domain, control) with a stable header', async () => {
+    seedBackups();
+    await cli(['compliance']);
+    const rows = readFileSync(join(storage, 'compliance.csv'), 'utf8').trim().split('\n');
+    assert.equal(rows[0], 'domain,state,score,grade,control,title,axis,severity,scope,status,detail,refs,remediation');
+    assert.ok(rows.length > 50, 'four domains against the catalogue is a lot of rows');
+  });
+
+  test('with no backup at all it says what to run rather than crashing', async () => {
+    writeFileSync(join(storage, 'domains.csv'), 'Domain\nnever-seen.example\n');
+    const { code, stdout } = await cli(['compliance']);
+    assert.equal(code, 0);
+    assert.match(readFileSync(join(storage, 'compliance.md'), 'utf8'), /No domain could be scored/);
+    assert.match(stdout, /no backup/);
+  });
+
+  test('the help lists the command and the CAA options', async () => {
+    const { stdout } = await cli([]);
+    assert.match(stdout, /node ovh\.mjs compliance/);
+    assert.match(stdout, /--caa/);
+    assert.match(stdout, /--iodef/);
   });
 });

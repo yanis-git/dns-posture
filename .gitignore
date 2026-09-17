@@ -20,10 +20,14 @@ storage/reports/*
 !storage/reports/.gitkeep
 
 # Belt and braces: these never belong in git, wherever they end up.
+# compliance.* carries the same payload as the inventory plus the evidence
+# lines — real subdomain names and verification tokens quoted verbatim.
 *.zone
 *.csv
 inventory.json
 inventory.md
+compliance.json
+compliance.md
 
 # --- Tooling -----------------------------------------------------------------
 node_modules/
