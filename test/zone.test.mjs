@@ -6,6 +6,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  DISPLACERS,
   caaBlocker,
   isApexPolicyName,
   parseCaa,
@@ -150,5 +151,61 @@ describe('caaBlocker', () => {
   test('a live apex outside the parking range blocks the deny', () => {
     const zone = [{ name: '@', type: 'A', rdata: '203.0.113.9' }];
     assert.match(String(caaBlocker(zone, { state: 'dormant' })), /still resolves to a live host/);
+  });
+});
+
+describe('DISPLACERS', () => {
+  // The competition relation: what a published record is allowed to remove.
+  // The config picks which of these apply; it cannot write a new one. Takes the
+  // OVH API shape, so these fixtures are subDomain/fieldType/target.
+  const r = (subDomain, fieldType, target) => ({ subDomain, fieldType, target });
+
+  test('each one matches the record its template replaces', () => {
+    assert.equal(DISPLACERS['apex-spf'](r('', 'TXT', '"v=spf1 ~all"')), true);
+    assert.equal(DISPLACERS['apex-dmarc'](r('_dmarc', 'TXT', '"v=DMARC1; p=none"')), true);
+    assert.equal(DISPLACERS['apex-dkim'](r('sel1._domainkey', 'TXT', '"v=DKIM1; p=MIGf..."')), true);
+    assert.equal(DISPLACERS['apex-mx'](r('', 'MX', '10 mx1.mail.ovh.net.')), true);
+    assert.equal(DISPLACERS['apex-caa-issue'](r('', 'CAA', '0 issue "letsencrypt.org"')), true);
+  });
+
+  test('no displacer reaches a delegated sending subdomain', () => {
+    // A zone that delegates its mail to an ESP subdomain. Every record here is
+    // the customer's live mail; matching any of them means proposing to break
+    // it. A dry-run on a real zone proposed exactly that once — invariant #10.
+    const mgZone = [
+      r('mg', 'MX', '10 mxa.eu.mailgun.org.'),
+      r('mg', 'TXT', '"v=spf1 include:mailgun.org ~all"'),
+      r('_dmarc.mg', 'TXT', '"v=DMARC1; p=none"'),
+      r('email._domainkey.mg', 'TXT', '"k=rsa; p=MIGf..."'),
+      r('email.mg', 'CNAME', 'eu.mailgun.org.'),
+      r('www', 'CAA', '0 issue "letsencrypt.org"'),
+    ];
+    for (const [key, displaces] of Object.entries(DISPLACERS)) {
+      for (const rec of mgZone) {
+        assert.equal(displaces(rec), false, `${key} matched ${recordLabel(rec)}`);
+      }
+    }
+  });
+
+  test('the CAA displacers are per-tag, so a deny never removes what it is not replacing', () => {
+    // R3: a profile publishing only `issue` must not take a permissive
+    // `issuewild` down with it and leave nothing in its place. Invariant #9,
+    // holding structurally rather than as a special case in planZone.
+    const issuewild = r('', 'CAA', '0 issuewild "letsencrypt.org"');
+    assert.equal(DISPLACERS['apex-caa-issue'](issuewild), false);
+    assert.equal(DISPLACERS['apex-caa-issuewild'](issuewild), true);
+    assert.equal(DISPLACERS['apex-caa-iodef'](issuewild), false);
+  });
+
+  test('apex-spf leaves a domain-verification TXT alone', () => {
+    // The record `txt.no-stale-verification` tells you to keep. The old engine
+    // deleted every apex TXT, so the tool advised protecting the zone from
+    // itself; narrowing the displacer to `v=spf1` is what resolves that.
+    assert.equal(DISPLACERS['apex-spf'](r('', 'TXT', '"MS=ms12345678"')), false);
+    assert.equal(DISPLACERS['apex-spf'](r('', 'TXT', '"google-site-verification=abc"')), false);
+  });
+
+  test('none matches nothing at all', () => {
+    assert.equal(DISPLACERS['none'](r('', 'TXT', '"v=spf1 -all"')), false);
   });
 });
