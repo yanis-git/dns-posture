@@ -666,7 +666,7 @@ ovh-domain-manager — anti-spoofing DNS hardening for dormant domains
   node ovh.mjs restore <domain> [f]    Re-import the latest backup (dry-run by default)
 
 inventory/compliance/policy: offline, no credentials needed — they read <storage>/backups/.
-compliance: 23 controls over anti-spoofing / closed-by-default / attack surface, scored
+compliance: 24 controls over anti-spoofing / closed-by-default / attack surface, scored
             per domain against the posture expected of its state. Writes
             <storage>/compliance.{md,json,csv}. See docs/BASELINE.md.
 
