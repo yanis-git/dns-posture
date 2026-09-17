@@ -361,6 +361,12 @@ export default Object.freeze({
     // runs that mail, not something a batch job applies at 3am.
     'mail-active': {
       states: ['mail-active'],
+      // Nothing on a live sending zone is ours to delete — not even the legacy
+      // `ftp` CNAME the defaults drop elsewhere. Emptying the list here is what
+      // makes "this profile writes nothing" true of the whole plan and not just
+      // of the 23 remedies; a --force that lifts the guard still finds nothing
+      // to do.
+      dropCnames: [],
       checks: {
         'spf.present': { remedy: { action: 'manual' } },
         'spf.single': { remedy: { action: 'manual' } },

@@ -532,6 +532,17 @@ describe('the findings-driven plan', () => {
     assert.deepEqual([plan.delete, plan.create], [[], []]);
   });
 
+  test('not even the legacy ftp CNAME is deleted on a mail-active zone', () => {
+    // `dropCnames` is not a remedy, so it slipped past the 23 `manual`/`report`
+    // entries and deleted an `ftp` CNAME on a live sending zone — found by the
+    // acceptance sweep over the real portfolio, not by a unit test. The profile
+    // empties the list, which is why the merge has to let it.
+    const zone = [rec('ftp', 'CNAME', 'ftp.90plan.ovh.net.'), rec('', 'MX', '10 mx1.mail.ovh.net.')];
+    assert.deepEqual(planFor(zone, { state: 'mail-active' }).delete, []);
+    // Still dropped where the profile does ask for it.
+    assert.equal(planFor(zone, { state: 'dormant' }).delete.filter((r) => r.fieldType === 'CNAME').length, 1);
+  });
+
   const FIXTURES = {
     empty: [],
     'permissive mail records': [

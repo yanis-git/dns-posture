@@ -13,6 +13,7 @@ import {
   recordLabel,
   sameRecord,
   toZoneShape,
+  toApiShape,
   txtValue,
 } from '../lib/zone.mjs';
 
@@ -72,6 +73,26 @@ describe('toZoneShape', () => {
 
   test('an empty subDomain becomes the apex, which is how a zone file spells it', () => {
     assert.equal(toZoneShape({ subDomain: '', fieldType: 'TXT', target: 'v=spf1 -all' }).name, '@');
+  });
+});
+
+describe('toApiShape', () => {
+  test('a backup reads as the shape the write path plans against', () => {
+    assert.deepEqual(
+      toApiShape({ name: '_dmarc', type: 'TXT', rdata: 'v=DMARC1; p=reject' }),
+      { subDomain: '_dmarc', fieldType: 'TXT', target: 'v=DMARC1; p=reject' });
+  });
+
+  test('the apex loses its @, and a record read this way carries no id to delete', () => {
+    const rec = toApiShape({ name: '@', type: 'MX', rdata: '0 .' });
+    assert.equal(rec.subDomain, '');
+    // Load-bearing: a plan built from a backup can be printed, never applied.
+    assert.equal(rec.id, undefined);
+  });
+
+  test('round trips with toZoneShape', () => {
+    const zoneShaped = { name: 'sel._domainkey', type: 'TXT', rdata: 'v=DKIM1; p=' };
+    assert.deepEqual(toZoneShape(toApiShape(zoneShaped)), zoneShaped);
   });
 });
 
