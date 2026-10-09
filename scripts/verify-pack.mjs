@@ -22,6 +22,10 @@ try {
   const blocker = join(dir, 'offline.mjs');
   writeFileSync(blocker, "globalThis.fetch = () => { throw new Error('Network forbidden in pack smoke'); };\n");
   const env = { PATH: process.env.PATH, HOME: caller, OVH_ENV_FILE: join(dir, 'absent.env'), OVH_ENDPOINT: 'ovh-nowhere' };
+  execFileSync('npm', ['install', '--prefix', caller, archive, '--offline', '--ignore-scripts', '--no-audit', '--no-fund'], { env, stdio: 'pipe' });
+  for (const bin of ['dns-posture', 'ovh-domain-manager']) {
+    assert.equal(execFileSync(process.execPath, ['--import', blocker, join(caller, 'node_modules', '.bin', bin), '--version'], { cwd: caller, env, encoding: 'utf8' }).trim(), pkg.version);
+  }
   const run = (args) => execFileSync(process.execPath, ['--import', blocker, join(root, 'dns-posture.mjs'), ...args], { cwd: caller, env, encoding: 'utf8' });
   assert.match(run(['--help']), /dns-posture/);
   assert.equal(run(['--version']).trim(), pkg.version);

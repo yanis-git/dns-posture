@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, realpathSync, existsSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { relative } from 'node:path';
 import { runLive } from './lib/live.mjs';
@@ -439,7 +439,7 @@ export async function main(argv) {
   else console.log(HELP);
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
+if (process.argv[1] && existsSync(process.argv[1]) && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
   try {
     await main(process.argv.slice(2));
   } catch (err) {

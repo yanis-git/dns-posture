@@ -6,8 +6,8 @@
   "license": "MIT",
   "author": "Yanis Ghidouche",
   "bin": {
-    "dns-posture": "./dns-posture.mjs",
-    "ovh-domain-manager": "./ovh.mjs"
+    "dns-posture": "dns-posture.mjs",
+    "ovh-domain-manager": "ovh.mjs"
   },
   "engines": {
     "node": ">=22.14"
