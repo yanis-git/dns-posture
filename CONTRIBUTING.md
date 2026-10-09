@@ -7,20 +7,20 @@ very welcome.
 ## Getting set up
 
 ```bash
-git clone https://github.com/<you>/ovh-domain-manager.git
-cd ovh-domain-manager
+git clone https://github.com/<you>/dns-posture.git
+cd dns-posture
 npm install     # dev dependencies only
 npm test
 npm run lint
 ```
 
-Node ≥ 20.12. The tool itself has no runtime dependencies; please keep it that way.
+Node ≥ 22.14. The tool itself has no runtime dependencies; please keep it that way.
 
 You do **not** need an OVH account to develop or run the tests.
 
 ## Before opening a pull request
 
-- `npm test` and `npm run lint` pass.
+- `npm test`, `npm run lint` and `npm run test:pack` pass.
 - New behaviour has a test. New *safety* behaviour has a test that fails without your change.
 - Read [AGENTS.md](AGENTS.md) — it lists the invariants that must not be weakened.
 - No real domain names, IPs, zone dumps or credentials anywhere in the diff. Fixtures use

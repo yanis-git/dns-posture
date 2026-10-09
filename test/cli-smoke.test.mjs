@@ -48,7 +48,7 @@ describe('first run on a fresh clone', () => {
     const { code, stdout } = await cli([]);
     assert.equal(code, 0);
     assert.match(stdout, /anti-spoofing DNS hardening/);
-    assert.match(stdout, /node ovh\.mjs auth/);
+    assert.match(stdout, /dns-posture auth/);
   });
 
   test('--help and --version work without credentials', async () => {
@@ -284,7 +284,7 @@ describe('compliance — the offline portfolio audit', () => {
 
   test('the help lists the command and the CAA options', async () => {
     const { stdout } = await cli([]);
-    assert.match(stdout, /node ovh\.mjs compliance/);
+    assert.match(stdout, /dns-posture compliance/);
     assert.match(stdout, /--caa/);
     assert.match(stdout, /--iodef/);
   });
@@ -311,7 +311,7 @@ describe('the policy subcommand', () => {
     assert.match(stdout, /Would delete \(\d+\) {3}every deletion is licensed by a failing check/);
     // The dormant fixture is already hardened bar the DKIM revocation.
     assert.match(stdout, /\+ \*\._domainkey TXT "v=DKIM1; p="\s+dkim\.wildcard-revoked/);
-    assert.match(stdout, /never contacts OVH/);
+    assert.match(stdout, /never contacts a DNS provider/);
   });
 
   test('a mail-active zone resolves to a profile that would write nothing', async () => {
@@ -370,7 +370,7 @@ describe('the policy subcommand', () => {
 
   test('the help lists the subcommand and the policy file', async () => {
     const { stdout } = await cli([]);
-    assert.match(stdout, /node ovh\.mjs policy/);
+    assert.match(stdout, /dns-posture policy/);
     assert.match(stdout, /OVH_POLICY_FILE/);
   });
 });

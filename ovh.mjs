@@ -333,7 +333,7 @@ function printResolved(domain, opts, p, policy) {
       + `${c.competing.join(', ')}`);
   }
   printProtections(protections);
-  console.log('\nRead only: this command never contacts OVH. `harden <domain>` plans against the live zone.');
+  console.log('\nRead only: this command never contacts a DNS provider. `harden <domain>` plans against the live zone.');
 }
 
 /** Show the effective policy — the whole file, or one domain's resolution. */
@@ -351,30 +351,30 @@ export const HELP = `
 dns-posture — anti-spoofing DNS hardening for dormant domains
 
   dns-posture zones                   Discover accessible zones
-  node ovh.mjs auth                    Generate the OVH consumer key
-  node ovh.mjs whoami                  Check the credentials
-  node ovh.mjs snapshot                Back up + inventory EVERY domain in the CSV
-  node ovh.mjs snapshot <domain>       Same, for a single domain
-  node ovh.mjs inventory               Rebuild the inventory (offline, keeps ticks)
-  node ovh.mjs compliance              Score the portfolio against the baseline (offline)
-  node ovh.mjs compliance <domain>     Same, for a single domain
-  node ovh.mjs policy                  Show the check/remedy configuration (offline)
-  node ovh.mjs policy <domain>         Same, resolved for one domain + what harden would do
-  node ovh.mjs audit <domain>          Dump the current zone
-  node ovh.mjs harden <domain>         Plan (dry-run by default)
-  node ovh.mjs harden <domain> --apply
-  node ovh.mjs harden-batch --list <file>          Plan for a whole batch (dry-run by default)
-  node ovh.mjs harden-batch --list <file> --apply
-  node ovh.mjs restore <domain> [f]    Re-import the latest backup (dry-run by default)
+  dns-posture auth                    Generate the OVH consumer key
+  dns-posture whoami                  Check the credentials
+  dns-posture snapshot                Back up + inventory EVERY domain in the CSV
+  dns-posture snapshot <domain>       Same, for a single domain
+  dns-posture inventory               Rebuild the inventory (offline, keeps ticks)
+  dns-posture compliance              Score the portfolio against the baseline (offline)
+  dns-posture compliance <domain>     Same, for a single domain
+  dns-posture policy                  Show the check/remedy configuration (offline)
+  dns-posture policy <domain>         Same, resolved for one domain + what harden would do
+  dns-posture audit <domain>          Dump the current zone
+  dns-posture harden <domain>         Plan (dry-run by default)
+  dns-posture harden <domain> --apply
+  dns-posture harden-batch --list <file>          Plan for a whole batch (dry-run by default)
+  dns-posture harden-batch --list <file> --apply
+  dns-posture restore <domain> [f]    Diff/restore a native JSON backup (dry-run by default)
 
-inventory/compliance/policy: offline, no credentials needed — they read <storage>/backups/.
+inventory/compliance/policy: offline, no credentials needed — they read provider/account backups (and legacy OVH exports).
 compliance: 24 controls over anti-spoofing / closed-by-default / attack surface, scored
             per domain against the posture expected of its state. Writes
             <storage>/compliance.{md,json,csv}. See docs/BASELINE.md.
 
 harden/audit/restore: exactly one domain per run.
 harden-batch: iterates over a batch, skips zones with active mail, refuses --force.
-              Consolidated report in <storage>/reports/batch-*.{md,json}.
+              Consolidated report in <storage>/reports/harden-batch-*.json.
 
 Options:
   --provider ovh|cloudflare  DNS provider (default ovh)
@@ -383,13 +383,13 @@ Options:
   --force              Bypass the "active mail" guard rail
   --null-mx            Also try an MX "0 ." (RFC 7505) — OVH may refuse it
   --caa                Publish a CAA deny: no CA may issue (RFC 8659). Opt-in —
-                       skipped automatically on a zone that serves web content
+                       blocked on OVH, suppressed where web use makes denial unsafe
   --iodef <mailto:...> CAA violation report address (implies --caa)
   --rua <mailto:...>   DMARC aggregate report address (none by default)
   --keep <regex>       Protect records whose name/value matches (repeatable)
   --drop-cname a,b     CNAMEs to delete on top of ftp
   --drop-redirect      Also delete the OVH web redirection markers (breaks the redirect)
-  --json               Machine-readable output (policy)
+  --json               Machine-readable output (policy, zones)
   --csv <path>         Source CSV (default: the newest one in <storage>/)
   --list <path>        Batch file for harden-batch (one domain per line, # = comment)
   --ttl <s>            TTL of created records (default 3600)
@@ -397,8 +397,13 @@ Options:
   -v, --version        Show the version
 
 Environment: APP_KEY, APP_SECRET, OVH_CONSUMER_KEY, OVH_ENDPOINT (default ovh-eu),
-             OVH_STORAGE_DIR (default ./storage). Read from .env if present.
-             OVH_POLICY_FILE (default ./config/policy.mjs) — a module, and loading it runs it.
+             CLOUDFLARE_API_TOKEN, DNS_POSTURE_STORAGE_DIR (default ./storage),
+             DNS_POSTURE_ENV_FILE (default ./.env), DNS_POSTURE_POLICY_FILE.
+             OVH_STORAGE_DIR, OVH_ENV_FILE, OVH_POLICY_FILE remain fallback aliases.
+             Custom policy modules execute trusted JavaScript; bundled policy is generic.
+
+Exit codes: 0 success/verified, 1 error/refusal, 2 partial/uncertain application.
+Legacy executables: ovh-domain-manager and node ovh.mjs.
 `;
 
 /** Commands that read config/policy.mjs. */
