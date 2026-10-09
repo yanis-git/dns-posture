@@ -242,7 +242,7 @@ describe('validatePolicy', () => {
     // A 69-entry file with three typos must not cost three round trips.
     const problems = problemsFrom((c) => {
       c.version = 99;
-      c.defaults.ttl = 1;
+      c.defaults.ttl = 0;
       c.profiles.dormant.checks['spf.hardfail'].remedy = { action: 'enforce', record: 'spf.dney' };
     });
     assert.ok(problems.length >= 3, `expected at least 3 problems, got ${problems.length}`);
