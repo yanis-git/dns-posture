@@ -2,7 +2,11 @@
 
 [Français](README.fr.md) · [Commands](docs/COMMANDS.md) · [Migration](docs/MIGRATION.md)
 
-Inventory OVHcloud and Cloudflare DNS zones, identify residual uses, score an anti-spoofing baseline and harden dormant domains with a reviewable plan. Zero runtime dependencies. **Dry-run is the default.** Active mail, delegated subdomains, protected records and web redirects have explicit safeguards.
+**Protect your company’s email identity.** A domain can be used in forged sender addresses even when it has no mailbox. dns-posture audits OVHcloud and Cloudflare configurations, reports missing safeguards and prepares explicit changes for domains that should not send email. Zero runtime dependencies. **Dry-run is the default.**
+
+Read the business story: **[How email can borrow your company’s identity](https://fennec.sh/en/blog/forgotten-domains-responsibility)**, with ANSSI guidance explained in plain language. Then follow **[a reporting example and periodic domain checks](https://fennec.sh/en/blog/cleaning-dns-portfolio)**. These guides explain both the protection and its limits.
+
+[Package on npm](https://www.npmjs.com/package/dns-posture) · [Source on GitHub](https://github.com/yanis-git/dns-posture) · [Reporting and monitoring setup](docs/MONITORING.md)
 
 ## Install
 
@@ -55,6 +59,5 @@ DNS propagation is not atomic. Local locks cannot stop remote operators. OVH CAA
 
 [Safety audit](docs/AUDIT-1.0.md) · [Policy](docs/POLICY.md) · [Baseline](docs/BASELINE.md) · [Release setup](docs/RELEASING.md)
 
-Field notes: [Cleaning a DNS portfolio without breaking active uses](https://fennec.sh/en/blog/cleaning-dns-portfolio) · [Forgotten domains remain a responsibility](https://fennec.sh/en/blog/forgotten-domains-responsibility).
 
 Development: `npm ci`, `npm test`, `npm run lint`, `npm run test:pack`. Tests use simulated APIs and no real credentials or DNS writes. MIT licensed.

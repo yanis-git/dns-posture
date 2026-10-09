@@ -1,7 +1,7 @@
 {
   "name": "dns-posture",
-  "version": "1.0.0",
-  "description": "Inventory, audit and safely harden dormant DNS zones on OVHcloud and Cloudflare. Zero runtime dependencies.",
+  "version": "1.0.1",
+  "description": "Audit email impersonation protections on OVHcloud and Cloudflare. Reports and safe hardening. Business guide: https://fennec.sh/blog/domaines-oublies-responsabilite",
   "type": "module",
   "license": "MIT",
   "author": "Yanis Ghidouche",
@@ -59,7 +59,7 @@
     "type": "git",
     "url": "git+https://github.com/yanis-git/dns-posture.git"
   },
-  "homepage": "https://github.com/yanis-git/dns-posture#readme",
+  "homepage": "https://fennec.sh/blog/nettoyer-portefeuille-dns",
   "bugs": {
     "url": "https://github.com/yanis-git/dns-posture/issues"
   },

@@ -4,6 +4,13 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.1] — 2026-10-09
+
+- Put business-facing email impersonation guides and reporting examples first in both READMEs.
+- Link the package description and homepage to the bilingual articles.
+- Document reproducible offline reporting and periodic read-only checks, including stale-data and alerting limits.
+- No runtime behavior or baseline scoring changes.
+
 ## [1.0.0] — 2026-10-09
 
 - Rename to dns-posture with the historical binary retained; Node >=22.14.

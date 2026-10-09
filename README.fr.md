@@ -2,7 +2,11 @@
 
 [English](README.md) · [Commandes](docs/COMMANDS.md) · [Migration](docs/MIGRATION.md)
 
-Inventorier les zones DNS OVHcloud et Cloudflare, identifier les usages résiduels, évaluer un référentiel anti-usurpation et durcir les domaines dormants avec un plan vérifiable. Aucune dépendance runtime. **La simulation est le mode par défaut.** Des protections explicites couvrent la messagerie active, les sous-domaines délégués, les enregistrements protégés et les redirections web.
+**Protéger l’identité de votre entreprise dans les courriels.** Un domaine peut être affiché comme expéditeur d’un faux message même s’il ne possède aucune boîte mail. dns-posture examine les configurations OVHcloud et Cloudflare, signale les protections manquantes et prépare les corrections des domaines qui ne doivent pas envoyer de messages. Aucune dépendance runtime. **La simulation est le mode par défaut.**
+
+Comprendre l’enjeu : **[Un courriel peut emprunter le nom de votre entreprise](https://fennec.sh/blog/domaines-oublies-responsabilite)**, avec les recommandations de l’ANSSI expliquées simplement. Puis découvrir **[un exemple de rapport et le suivi périodique des domaines](https://fennec.sh/blog/nettoyer-portefeuille-dns)**. Ces articles détaillent la protection et ses limites pour un dirigeant non spécialiste.
+
+[Package npm](https://www.npmjs.com/package/dns-posture) · [Code sur GitHub](https://github.com/yanis-git/dns-posture) · [Configurer le reporting et le suivi](docs/MONITORING.md)
 
 ## Installation
 
@@ -55,6 +59,5 @@ La propagation DNS n’est pas atomique. Les verrous locaux n’empêchent pas u
 
 [Audit de sûreté](docs/AUDIT-1.0.md) · [Politique](docs/POLICY.md) · [Référentiel](docs/BASELINE.md) · [Publication npm](docs/RELEASING.md)
 
-Retours et enjeux : [Nettoyer un portefeuille DNS sans casser les usages actifs](https://fennec.sh/blog/nettoyer-portefeuille-dns) · [Les domaines oubliés restent une responsabilité](https://fennec.sh/blog/domaines-oublies-responsabilite).
 
 Développement : `npm ci`, `npm test`, `npm run lint`, `npm run test:pack`. Les tests simulent les API sans credentials réels ni écriture DNS. Licence MIT.
