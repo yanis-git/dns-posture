@@ -365,7 +365,7 @@ describe('the policy subcommand', () => {
     writeFileSync(broken, 'export default { version: 99 };\n');
     const { code, stdout } = await cli(['restore', 'dormant.example'], { OVH_POLICY_FILE: broken });
     assert.equal(code, 0, stdout);
-    assert.match(stdout, /DRY-RUN — add --apply/);
+    assert.match(stdout, /DRY-RUN — legacy backup readable/);
   });
 
   test('the help lists the subcommand and the policy file', async () => {

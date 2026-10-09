@@ -64,11 +64,11 @@ describe('parseArgs', () => {
   });
 
   test('value flags consume their argument', () => {
-    const o = parseArgs(['--rua', 'mailto:d@example.com', '--csv', 'a.csv', '--list', 'b.txt', 'example.com']);
+    const o = parseArgs(['--rua', 'mailto:d@example.com', '--csv', 'a.csv']);
     assert.equal(o.rua, 'mailto:d@example.com');
     assert.equal(o.csv, 'a.csv');
-    assert.equal(o.list, 'b.txt');
-    assert.deepEqual(o._, ['example.com']);
+    assert.equal(parseArgs(['--list', 'b.txt']).list, 'b.txt');
+    assert.deepEqual(o._, []);
   });
 
   test('an unknown option is rejected rather than silently ignored', () => {
@@ -149,3 +149,15 @@ describe('findCsv', () => {
     assert.throws(() => findCsv({}, dir), /No CSV found in .* pass --csv/);
   });
 });
+
+for (const domain of ['../example.com', '/example.com', 'a..example', 'a/b.example', 'https://example.com', '-bad.example']) {
+  test(`unsafe domain ${domain} is rejected before path construction`, () => {
+    assert.throws(() => requireDomain({ _: [domain] }), /Invalid domain/);
+  });
+}
+for (const option of ['--provider', '--account', '--keep', '--ttl', '--csv', '--list', '--rua', '--iodef', '--drop-cname']) {
+  test(`${option} requires a value`, () => { assert.throws(() => parseArgs([option]), /Missing value/); });
+}
+for (const ttl of ['0', '-1', 'NaN', 'Infinity', '2.5', '2147483648']) {
+  test(`invalid TTL ${ttl} is rejected`, () => { assert.throws(() => parseArgs(['--ttl', ttl]), /TTL must/); });
+}

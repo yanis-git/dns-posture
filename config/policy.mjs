@@ -29,7 +29,7 @@
 //   remove   delete what competes and publish nothing
 //   manual   no DNS change; the check's own remediation prose stands
 //   report   scored, no remedy — a finding an operator acts on deliberately
-//   off      not evaluated; `na` with the stated reason, shown in the report
+//   off      no automated remedy; baseline scoring is unchanged
 //
 // `manual` takes an optional `text:` to override the check's prose. Without it
 // the check keeps the wording it already produces, which is usually better —

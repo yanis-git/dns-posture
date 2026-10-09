@@ -4,15 +4,20 @@ Guidance for coding agents and contributors working in this repository.
 
 ## What this is
 
-A zero-dependency Node CLI that inventories OVH domains, scores them against a compliance
+A zero-dependency Node CLI that inventories OVH and Cloudflare domains, scores them against a compliance
 baseline, and publishes an anti-spoofing DNS policy on the dormant ones. It deletes DNS records in
 production. Treat every change to `lib/harden.mjs` and `lib/inventory.mjs` as safety-critical.
 
 ## Layout
 
 ```
-ovh.mjs               CLI entrypoint: subcommand dispatch, orchestration, reports
-lib/ovh-client.mjs    Signed OVH v1 API client (no retry, no backoff — callers pace themselves)
+dns-posture.mjs       Primary executable (ovh.mjs / ovh-domain-manager remain aliases)
+lib/live.mjs         Provider orchestration and shared snapshot boundary
+lib/engine.mjs       Shared classification / evaluation / resolution / planning
+lib/transaction.mjs  Backups, integrity, locks, operations and verification
+lib/providers/       OVH and Cloudflare native adapters
+ovh.mjs              CLI entrypoint: subcommand dispatch, orchestration, reports
+lib/ovh-client.mjs    Signed OVH v1 API client (bounded read retries, no write retries)
 lib/inventory.mjs     Zone-file parser + dormant/web-active/mail-active classifier
 lib/harden.mjs        Policy engine: buildPolicy / planZone / applyPlan
 lib/baseline.mjs      Compliance control catalogue + scoring (pure, offline, no I/O)
@@ -35,8 +40,7 @@ snapshotDomain(ovh, domain)
                                                      tickDomain() + report to storage/reports/
 ```
 
-`snapshotDomain` in `ovh.mjs` is the shared composition point for `snapshot`, `harden` and
-`harden-batch`. Every path that mutates a zone goes through it first, which is what guarantees a
+`snapshotDomain` in `lib/live.mjs` is the shared composition point for `snapshot`, `harden`, `harden-batch` and `restore`. Every path that mutates a zone goes through it and `applyTransaction` first, which is what guarantees a
 backup exists before any deletion.
 
 `inventory` and `compliance` share a second, offline path that never opens a socket:
@@ -128,9 +132,17 @@ them testable end-to-end in the smoke suite. Module direction is
 Read-only, safe to run: `node ovh.mjs whoami`, `node ovh.mjs audit <domain>`,
 `node ovh.mjs snapshot <domain>`, `node ovh.mjs inventory`, `node ovh.mjs compliance`.
 
-`--caa` publishes a record whose OVH `target` syntax is **not documented and not yet verified
-against a live account** (see the note in `buildPolicy`). Confirm it on a throwaway zone before
-any `--apply --caa`.
+`--caa` remains opt-in. Every OVH CAA mutation is blocked in the adapter until the target
+encoding is verified on a disposable owned zone. Do not remove this block using mocked evidence.
 
 Never run `--apply` against someone's account to check a change. Use a domain you own and can
 restore, and confirm `node ovh.mjs restore <domain>` shows a usable backup first.
+
+## Version 1.0 release invariants
+
+All runtime writes use `applyTransaction`. Backup failure and changed snapshots block writing.
+Stop after the first write error, never retry uncertain writes, and require final readback before
+reporting success or ticking inventory. Exit codes are 0 success, 1 refusal/error, 2 partial/uncertain.
+Native backups identify provider, account and zone. Legacy exports remain offline-readable only.
+Do not reintroduce the old raw import or `applyPlan` write path. npm ships only the generic policy,
+never a custom operational policy. Test the actual tarball with `npm run test:pack`.

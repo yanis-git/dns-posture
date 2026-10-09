@@ -1,5 +1,11 @@
 # The hardening policy, and why each record is what it is
 
+> Version 1.0: `policy`, `harden` and `harden-batch` share one engine. `off`
+> disables automated remediation only, never baseline scoring. OVH CAA writes
+> are blocked pending encoding verification. See [migration](MIGRATION.md) and
+> [the current safety audit](AUDIT-1.0.md) for the application/restore boundary.
+
+
 `harden` publishes three records — four with `--null-mx`. This document explains the reasoning, so
 you can judge the policy without reading the code. If you disagree with a choice, the values live
 in `buildPolicy` (`lib/harden.mjs`).

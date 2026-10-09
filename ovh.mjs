@@ -1,21 +1,25 @@
 #!/usr/bin/env node
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
-import { join, relative } from 'node:path';
+import { relative } from 'node:path';
+import { runLive } from './lib/live.mjs';
+import { domainName } from './lib/validation.mjs';
+import { latestSnapshot, readSnapshot } from './lib/transaction.mjs';
+import { posture } from './lib/engine.mjs';
 import { OvhClient } from './lib/ovh-client.mjs';
-import { buildPolicy, fetchRecords, planZone, applyPlan, recordLabel, TEXTUAL_TYPES } from './lib/harden.mjs';
+import { recordLabel } from './lib/harden.mjs';
 import { parseZone, classify } from './lib/inventory.mjs';
 import {
-  renderInventory, readTicks, tickDomain, saveBackup, latestBackup,
+  renderInventory, readTicks, latestBackup,
   renderCompliance, renderComplianceCsv,
 } from './lib/report.mjs';
-import { evaluate, aggregate, caaBlocker, BASELINE_VERSION, SEVERITY_WEIGHT } from './lib/baseline.mjs';
-import { loadPolicy, resolvePolicy, planFromFindings } from './lib/policy.mjs';
-import { toApiShape } from './lib/zone.mjs';
-import { parseArgs, requireDomain, findCsv, readCsvDomains, readListFile } from './lib/cli.mjs';
+import { evaluate, aggregate, BASELINE_VERSION, SEVERITY_WEIGHT } from './lib/baseline.mjs';
+import { loadPolicy } from './lib/policy.mjs';
+import { toApiShape, toZoneShape } from './lib/zone.mjs';
+import { parseArgs, findCsv, readCsvDomains } from './lib/cli.mjs';
 import { loadEnv, ensureStorage, requireCredentials, policyFile } from './lib/config.mjs';
 
-export const VERSION = '0.2.0';
+export const VERSION = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version;
 
 const ACCESS_RULES = [
   { method: 'GET', path: '/me' },
@@ -42,59 +46,25 @@ async function cmdAuth() {
   console.log(`2. Then add this to .env:\n\n   OVH_CONSUMER_KEY=${res.consumerKey}\n`);
 }
 
-async function cmdWhoami() {
-  const ovh = client();
-  await ovh.syncTime();
-  const me = await ovh.get('/me');
-  console.log(`Connected as: ${me.nichandle} (${me.email})`);
+function offlineFile(p, opts, domain) {
+  return latestSnapshot(p.storage, opts.provider || 'ovh', domain, opts.account)
+    || (opts.provider !== 'cloudflare' ? latestBackup(p.backups, domain) : null);
 }
-
-/** Back up the zone and return { zoneText, backupPath, records, ...classification }. */
-async function snapshotDomain(ovh, domain, p) {
-  const zoneText = await ovh.get(`/domain/zone/${encodeURIComponent(domain)}/export`);
-  const backupPath = saveBackup(p.backups, domain, zoneText);
-  const records = parseZone(zoneText);
-  return { domain, zoneText, backupPath, records, ...classify(records, { domain }) };
+function offlineRecords(file) {
+  return file.endsWith('.json') ? readSnapshot(file).records.map(toZoneShape) : parseZone(readFileSync(file, 'utf8'));
 }
-
 function writeInventory(entries, p) {
   writeFileSync(p.inventoryJson, JSON.stringify(entries, null, 2));
   writeFileSync(p.inventoryMd, renderInventory(entries, readTicks(p.inventoryMd)));
 }
 
-async function cmdSnapshot(opts, p) {
-  const domains = opts._.length ? opts._.map((d) => d.toLowerCase()) : readCsvDomains(findCsv(opts, p.storage));
-  const ovh = client();
-  await ovh.syncTime();
-
-  console.log(`Snapshotting ${domains.length} domain(s) — read only\n`);
-  const entries = [];
-
-  for (const [i, domain] of domains.entries()) {
-    const prefix = `[${String(i + 1).padStart(3)}/${domains.length}] ${domain.padEnd(34)}`;
-    try {
-      const snap = await snapshotDomain(ovh, domain, p);
-      entries.push({ domain, state: snap.state, signals: snap.signals, counts: snap.counts });
-      console.log(`${prefix} ${snap.state.padEnd(11)} ${snap.counts.total} records`);
-    } catch (err) {
-      const reason = err.status === 404 ? 'zone not hosted at OVH' : err.message;
-      entries.push({ domain, state: 'error', signals: [reason], counts: null });
-      console.log(`${prefix} !! ${reason}`);
-    }
-  }
-
-  writeInventory(entries, p);
-  console.log(`\nBackups   : ${p.backups}/<domain>/<timestamp>.zone`);
-  console.log(`Inventory : ${p.inventoryMd}`);
-}
-
 /** Rebuild the inventory by reclassifying the on-disk backups. No network. */
 function cmdInventory(opts, p) {
-  const domains = opts._.length ? opts._.map((d) => d.toLowerCase()) : readCsvDomains(findCsv(opts, p.storage));
+  const domains = opts._.length ? opts._.map(domainName) : readCsvDomains(findCsv(opts, p.storage));
   const entries = domains.map((domain) => {
-    const file = latestBackup(p.backups, domain);
+    const file = offlineFile(p, opts, domain);
     if (!file) return { domain, state: 'error', signals: ['no backup — run `snapshot`'], counts: null };
-    const records = parseZone(readFileSync(file, 'utf8'));
+    const records = offlineRecords(file);
     return { domain, ...classify(records, { domain }) };
   });
   writeInventory(entries, p);
@@ -109,18 +79,18 @@ function cmdInventory(opts, p) {
  * run must not be able to disturb the hand-ticked worklist.
  */
 function cmdCompliance(opts, p) {
-  const domains = opts._.length ? opts._.map((d) => d.toLowerCase()) : readCsvDomains(findCsv(opts, p.storage));
+  const domains = opts._.length ? opts._.map(domainName) : readCsvDomains(findCsv(opts, p.storage));
 
   console.log(`Compliance baseline v${BASELINE_VERSION} — ${domains.length} domain(s) from backups, offline\n`);
 
   const reports = domains.map((domain, i) => {
     const prefix = `[${String(i + 1).padStart(3)}/${domains.length}] ${domain.padEnd(34)}`;
-    const file = latestBackup(p.backups, domain);
+    const file = offlineFile(p, opts, domain);
     if (!file) {
       console.log(`${prefix} !! no backup — run \`snapshot\``);
       return { domain, state: 'error', score: null, grade: null, controls: [], error: 'no backup — run `snapshot`' };
     }
-    const records = parseZone(readFileSync(file, 'utf8'));
+    const records = offlineRecords(file);
     const report = { ...evaluate(records, { domain }), source: relative(p.storage, file) };
     const critical = report.controls.filter((c) => c.status === 'fail' && c.severity === 'critical').length;
     const tail = critical
@@ -168,7 +138,7 @@ const ACTION_LEGEND = [
   'remove   delete, and publish nothing in its place',
   'manual   remediation text only, nothing is ever written',
   'report   scored, no remedy',
-  'off      not evaluated, with the reason shown',
+  'off      no automatic remedy; baseline findings remain scored',
 ];
 
 /** Display form of a path: relative to the working directory when it is inside it. */
@@ -268,28 +238,13 @@ function printProtections(protections) {
  * it — without an API call, and long before anything is written.
  */
 function printResolved(domain, opts, p, policy) {
-  const file = latestBackup(p.backups, domain);
+  const file = offlineFile(p, opts, domain);
   if (!file) throw new Error(`No backup for ${domain} — run \`node ovh.mjs snapshot ${domain}\` first.`);
 
-  const view = parseZone(readFileSync(file, 'utf8'));
-  const cls = classify(view, { domain });
-  // The backup read through the write path's eyes, restricted to the types
-  // `fetchRecords` actually retrieves — otherwise the preview reports on NS and
-  // SOA records `harden` never sees, and stops matching what it would do. No
-  // record ids either: this plan is for reading, `applyPlan` could not run it.
-  const fetched = [...TEXTUAL_TYPES, 'MX', 'CNAME', 'CAA'];
-  const records = view.filter((r) => fetched.includes(r.type)).map(toApiShape);
-
-  const report = evaluate(view, { domain, state: cls.state });
-  const resolved = resolvePolicy(view, { domain, state: cls.state, policy });
-  const { wanted, licences, conflicts } = planFromFindings(report, resolved, records);
-  const plan = planZone(records, {
-    wanted,
-    licences,
-    keepPatterns: resolved.keep,
-    dropCnames: resolved.dropCnames,
-    dropRedirect: resolved.dropRedirect,
-  });
+  const view = offlineRecords(file);
+  const outcome = posture(view.map(toApiShape), domain, policy, opts);
+  const { report, resolved, licences, conflicts, plan } = outcome;
+  const cls = outcome;
   const protections = protectedFromLicences(plan, licences);
 
   if (opts.json) {
@@ -352,7 +307,7 @@ function printResolved(domain, opts, p, policy) {
     const template = entry.template;
     let tail = '';
     if (entry.demotedFrom) tail = `!! demoted from ${entry.demotedFrom} — ${entry.demotionReason}`;
-    else if (entry.remedy.action === 'off') tail = entry.reason ?? 'not evaluated';
+    else if (entry.remedy.action === 'off') tail = entry.reason ?? 'no automated remedy';
     else if (entry.remedy.action === 'remove') tail = `deletes ${template.displaces}, publishes nothing`;
     else if (template) tail = `-> ${recordLabel(template)}`;
     else if (entry.reason) tail = entry.reason;
@@ -389,266 +344,13 @@ function cmdPolicy(opts, p, policy) {
     printCatalogue(policy, policyFile());
     return;
   }
-  printResolved(opts._[0].toLowerCase().trim(), opts, p, policy);
-}
-
-/**
- * Resolve --caa against the zone itself.
- *
- * A CAA at the apex is inherited by every subdomain (RFC 8659 §3), so a deny on
- * a zone that still serves web content breaks the next certificate renewal —
- * sixty to ninety days later, long after anyone connects the two. The flag asks;
- * the zone decides. One predicate, shared with the compliance baseline, so the
- * audit and the write path can never disagree about what is safe.
- */
-function resolveCaa(opts, snap, log) {
-  if (!opts.caa) return false;
-  const blocked = caaBlocker(snap.records, snap);
-  if (blocked) {
-    log(`   caa    : skipped — ${blocked}`);
-    return false;
-  }
-  return true;
-}
-
-function printPlan(zone, plan) {
-  console.log(`\n== ${zone}`);
-  for (const rec of plan.delete) console.log(`   - DELETE  ${rec.label}  -> ${rec.reason}`);
-  for (const rec of plan.create) console.log(`   + CREATE  ${recordLabel(rec)}  -> ${rec.why}`);
-  for (const rec of plan.keep.filter((k) => k.reason === 'already compliant')) {
-    console.log(`   = OK      ${recordLabel(rec)}`);
-  }
-  for (const rec of plan.keep.filter((k) => k.reason !== 'already compliant')) {
-    console.log(`   . KEEP    ${recordLabel(rec)}  -> ${rec.reason}`);
-  }
-  if (!plan.delete.length && !plan.create.length) console.log('   OK zone already compliant, nothing to do');
-
-  // RFC 8659 §4.2: the `issue` properties form a union. A permissive record
-  // kept by --keep therefore still authorises its CA, deny pair or not.
-  const keptPermissive = plan.keep.some((r) => r.fieldType === 'CAA'
-    && /^"?\s*\d+\s+issuewild?\s+"?\s*[^";\s]/i.test(String(r.target ?? '')));
-  if (keptPermissive && plan.create.some((r) => r.fieldType === 'CAA')) {
-    console.log('   !! a permissive CAA is kept alongside the deny — issuance is still allowed');
-  }
-}
-
-async function cmdHarden(opts, p) {
-  const zone = requireDomain(opts);
-  const ovh = client();
-  await ovh.syncTime();
-
-  let snap;
-  try {
-    snap = await snapshotDomain(ovh, zone, p);
-  } catch (err) {
-    throw new Error(err.status === 404
-      ? `Zone "${zone}" not found at OVH (DNS delegated elsewhere?)`
-      : err.message, { cause: err });
-  }
-
-  console.log(opts.apply ? `APPLYING to ${zone}` : `DRY-RUN on ${zone} — add --apply to execute`);
-  console.log(`   state  : ${snap.state}${snap.signals.length ? ` (${snap.signals.join(' · ')})` : ''}`);
-  console.log(`   backup : ${snap.backupPath}`);
-
-  // Guard rail: we do not harden a zone that is still in use, without --force.
-  if (snap.state === 'mail-active' && !opts.force) {
-    throw new Error(`"${zone}" has active mail (${snap.signals.join(' · ')}).\n`
-      + '   Hardening would break both delivery AND sending. Re-run with --force if that is intended.');
-  }
-
-  const policy = buildPolicy({
-    rua: opts.rua,
-    nullMx: opts.nullMx,
-    caa: resolveCaa(opts, snap, console.log),
-    iodef: opts.iodef,
-    ttl: opts.ttl || 3600,
-  });
-  const records = await fetchRecords(ovh, zone);
-  const plan = planZone(records, { policy, keepPatterns: opts.keep, cnamesToDrop: opts.cnames, dropRedirect: opts.dropRedirect });
-  printPlan(zone, plan);
-
-  const result = { zone, mode: opts.apply ? 'apply' : 'plan', at: new Date().toISOString(), state: snap.state, backup: snap.backupPath, plan };
-
-  if (opts.apply) {
-    result.applied = await applyPlan(ovh, zone, plan);
-    console.log(`\n   -> ${result.applied.deleted.length} deletion(s), ${result.applied.created.length} creation(s), zone refreshed`);
-    for (const e of result.applied.errors) console.log(`   ERROR ${e}`);
-
-    const note = `cleaned ${new Date().toISOString().slice(0, 10)}${result.applied.errors.length ? ` · ${result.applied.errors.length} error(s)` : ''}`;
-    if (tickDomain(p.inventoryMd, zone, note)) console.log(`   ticked in ${p.inventoryMd}`);
-  }
-
-  mkdirSync(p.reports, { recursive: true });
-  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-  const path = join(p.reports, `${zone}-${opts.apply ? 'apply' : 'plan'}-${stamp}.json`);
-  writeFileSync(path, JSON.stringify(result, null, 2));
-  console.log(`\nReport: ${path}`);
-}
-
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-function writeBatchReport(rows, mode, opts, p) {
-  mkdirSync(p.reports, { recursive: true });
-  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-  const base = join(p.reports, `batch-${mode}-${stamp}`);
-
-  const tally = {};
-  for (const r of rows) tally[r.status] = (tally[r.status] || 0) + 1;
-  const totalDel = rows.reduce((n, r) => n + (r.deletes || 0), 0);
-  const totalNew = rows.reduce((n, r) => n + (r.creates || 0), 0);
-  const summary = Object.entries(tally).map(([k, v]) => `${k}: ${v}`).join(' · ');
-
-  writeFileSync(`${base}.json`, JSON.stringify({
-    mode,
-    at: new Date().toISOString(),
-    options: {
-      dropRedirect: !!opts.dropRedirect,
-      nullMx: !!opts.nullMx,
-      caa: !!opts.caa,
-      iodef: opts.iodef || null,
-      ttl: opts.ttl || 3600,
-      rua: opts.rua || null,
-      keep: opts.keep.map((re) => re.source),
-      cnamesToDrop: opts.cnames,
-    },
-    tally,
-    totals: { deletes: totalDel, creates: totalNew },
-    rows,
-  }, null, 2));
-
-  const cell = (r) => (r.reason || (r.errors || []).join(' ; ') || '').replace(/\|/g, '\\|').slice(0, 140);
-  writeFileSync(`${base}.md`, [
-    `# Batch hardening — ${mode === 'apply' ? 'apply' : 'dry-run'}`,
-    '',
-    `${new Date().toISOString().slice(0, 16).replace('T', ' ')} · ${rows.length} domains · ${totalDel} deletion(s), ${totalNew} creation(s)`,
-    '',
-    summary,
-    '',
-    '| Domain | State | Deleted | Created | Status | Detail |',
-    '|---|---|---:|---:|---|---|',
-    ...rows.map((r) => `| ${r.domain} | ${r.state || '—'} | ${r.deletes ?? '—'} | ${r.creates ?? '—'} | ${r.status} | ${cell(r)} |`),
-    '',
-  ].join('\n'));
-
-  console.log(`\n== ${rows.length} domains · ${totalDel} deletion(s), ${totalNew} creation(s)`);
-  console.log(`   ${summary}`);
-  console.log(`\nReport: ${base}.md`);
-  console.log(`        ${base}.json`);
-}
-
-/**
- * Roll the policy out over a batch of domains. Reuses the single-domain
- * machinery: one failing zone does not stop the batch, and --force is refused.
- */
-async function cmdHardenBatch(opts, p) {
-  if (opts.force) {
-    throw new Error('--force is refused in batch mode.\n'
-      + '   A domain with active mail is handled one at a time: `node ovh.mjs harden <domain> --force`.');
-  }
-  const domains = opts.list ? readListFile(opts.list) : opts._.map((d) => d.toLowerCase().trim());
-  if (!domains.length) throw new Error('No domain: pass --list <file> or domains as arguments.');
-
-  const ovh = client();
-  await ovh.syncTime();
-
-  const mode = opts.apply ? 'apply' : 'plan';
-  console.log(opts.apply
-    ? `APPLYING in batch — ${domains.length} domain(s)\n`
-    : `DRY-RUN in batch — ${domains.length} domain(s), add --apply to execute\n`);
-
-  const rows = [];
-
-  for (const [i, domain] of domains.entries()) {
-    const prefix = `[${String(i + 1).padStart(2)}/${domains.length}] ${domain.padEnd(36)}`;
-    if (i) await sleep(300); // the OVH API client has neither retry nor backoff
-
-    let snap;
-    try {
-      snap = await snapshotDomain(ovh, domain, p);
-    } catch (err) {
-      const reason = err.status === 404 ? 'zone not hosted at OVH' : err.message;
-      rows.push({ domain, status: 'error', reason });
-      console.log(`${prefix} !! skipped — ${reason}`);
-      continue;
-    }
-
-    if (snap.state === 'mail-active') {
-      rows.push({ domain, status: 'skipped', state: snap.state, backup: snap.backupPath, reason: `active mail — ${snap.signals.join(' · ')}` });
-      console.log(`${prefix} >> skipped — active mail`);
-      continue;
-    }
-
-    try {
-      // Built per domain: --caa is resolved against each zone, so one zone
-      // serving web content cannot disable the deny for the whole batch, and
-      // cannot have it forced on either.
-      const caa = resolveCaa(opts, snap, (line) => console.log(`${' '.repeat(14)}${line.trim()}`));
-      const policy = buildPolicy({
-        rua: opts.rua, nullMx: opts.nullMx, caa, iodef: opts.iodef, ttl: opts.ttl || 3600,
-      });
-      const records = await fetchRecords(ovh, domain);
-      const plan = planZone(records, {
-        policy, keepPatterns: opts.keep, cnamesToDrop: opts.cnames, dropRedirect: opts.dropRedirect,
-      });
-      const row = {
-        domain, status: mode, state: snap.state, backup: snap.backupPath,
-        deletes: plan.delete.length, creates: plan.create.length, plan,
-      };
-
-      if (opts.apply) {
-        const applied = await applyPlan(ovh, domain, plan);
-        row.applied = applied;
-        row.errors = applied.errors;
-        row.status = applied.errors.length ? 'partial' : 'ok';
-        if (!applied.errors.length) {
-          row.ticked = tickDomain(p.inventoryMd, domain, `cleaned ${new Date().toISOString().slice(0, 10)}`);
-        }
-      }
-      rows.push(row);
-
-      const verdict = plan.delete.length || plan.create.length
-        ? `-${plan.delete.length} +${plan.create.length}`
-        : 'already compliant';
-      console.log(`${prefix} ${snap.state.padEnd(11)} ${verdict}`);
-      for (const e of row.errors || []) console.log(`${' '.repeat(14)}ERROR ${e}`);
-    } catch (err) {
-      rows.push({ domain, status: 'error', state: snap.state, backup: snap.backupPath, reason: err.message });
-      console.log(`${prefix} ERROR ${err.message}`);
-    }
-  }
-
-  writeBatchReport(rows, mode, opts, p);
-}
-
-async function cmdAudit(opts) {
-  const zone = requireDomain(opts);
-  const ovh = client();
-  await ovh.syncTime();
-  console.log(await ovh.get(`/domain/zone/${encodeURIComponent(zone)}/export`));
-}
-
-async function cmdRestore(opts, p) {
-  const zone = opts._[0]?.toLowerCase();
-  if (!zone) throw new Error('Usage: restore <domain> [file.zone]');
-  const file = opts._[1] || latestBackup(p.backups, zone);
-  if (!file || !existsSync(file)) throw new Error(`No backup found for ${zone}`);
-
-  const zoneFile = readFileSync(file, 'utf8');
-  console.log(`Restoring ${zone} from ${file}`);
-  if (!opts.apply) {
-    console.log('\n' + zoneFile);
-    console.log('DRY-RUN — add --apply to re-import this zone.');
-    return;
-  }
-  const ovh = client();
-  await ovh.syncTime();
-  const task = await ovh.post(`/domain/zone/${encodeURIComponent(zone)}/import`, { zoneFile });
-  console.log(`Import started (task ${task?.taskId ?? '?'}). Check with: node ovh.mjs audit ${zone}`);
+  printResolved(domainName(opts._[0]), opts, p, policy);
 }
 
 export const HELP = `
-ovh-domain-manager — anti-spoofing DNS hardening for dormant domains
+dns-posture — anti-spoofing DNS hardening for dormant domains
 
+  dns-posture zones                   Discover accessible zones
   node ovh.mjs auth                    Generate the OVH consumer key
   node ovh.mjs whoami                  Check the credentials
   node ovh.mjs snapshot                Back up + inventory EVERY domain in the CSV
@@ -675,6 +377,8 @@ harden-batch: iterates over a batch, skips zones with active mail, refuses --for
               Consolidated report in <storage>/reports/batch-*.{md,json}.
 
 Options:
+  --provider ovh|cloudflare  DNS provider (default ovh)
+  --account <id>       Select account for offline backups / Cloudflare zones
   --apply              Actually execute (dry-run otherwise)
   --force              Bypass the "active mail" guard rail
   --null-mx            Also try an MX "0 ." (RFC 7505) — OVH may refuse it
@@ -698,7 +402,7 @@ Environment: APP_KEY, APP_SECRET, OVH_CONSUMER_KEY, OVH_ENDPOINT (default ovh-eu
 `;
 
 /** Commands that read config/policy.mjs. */
-const POLICY_COMMANDS = new Set(['policy']);
+const POLICY_COMMANDS = new Set(['policy', 'harden', 'harden-batch']);
 
 export async function main(argv) {
   // `node ovh.mjs --version` has no command: the first token is a flag, so it
@@ -718,16 +422,20 @@ export async function main(argv) {
   // an operator and `restore`.
   const policy = POLICY_COMMANDS.has(cmd) ? await loadPolicy() : null;
 
-  if (cmd === 'auth') await cmdAuth();
-  else if (cmd === 'whoami') await cmdWhoami();
-  else if (cmd === 'snapshot') await cmdSnapshot(opts, p);
+  if (['policy', 'harden', 'harden-batch'].includes(cmd) && ['--null-mx', '--caa', '--iodef', '--rua', '--ttl', '--drop-cname', '--drop-redirect'].some((f) => argv.includes(f))) {
+    console.error('Deprecated policy flags: migrate these overrides to DNS_POSTURE_POLICY_FILE. --keep remains cumulative.');
+  }
+  if (['zones', 'whoami', 'snapshot', 'audit', 'harden', 'harden-batch', 'restore'].includes(cmd)) {
+    await runLive(cmd, opts, p, policy);
+    return;
+  }
+  if (cmd === 'auth') {
+    if (opts.provider === 'cloudflare') throw new Error('Cloudflare uses a dedicated CLOUDFLARE_API_TOKEN');
+    await cmdAuth();
+  }
   else if (cmd === 'inventory') cmdInventory(opts, p);
   else if (cmd === 'compliance') cmdCompliance(opts, p);
   else if (cmd === 'policy') cmdPolicy(opts, p, policy);
-  else if (cmd === 'audit') await cmdAudit(opts);
-  else if (cmd === 'harden') await cmdHarden(opts, p);
-  else if (cmd === 'harden-batch') await cmdHardenBatch(opts, p);
-  else if (cmd === 'restore') await cmdRestore(opts, p);
   else console.log(HELP);
 }
 

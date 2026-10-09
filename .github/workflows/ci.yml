@@ -19,7 +19,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node: ['20.12', '22', '24']
+        node: ['22.14', '24', '26']
     steps:
       - uses: actions/checkout@v7
 
@@ -37,6 +37,9 @@ jobs:
       # CLI with OVH_ENV_FILE pointing at a file that does not exist.
       - name: Test
         run: npm test
+
+      - name: Packed CLI
+        run: npm run test:pack
 
   secrets:
     name: secret scan

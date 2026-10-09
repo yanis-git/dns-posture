@@ -236,72 +236,8 @@ describe('planZone — idempotence', () => {
   });
 });
 
-describe('applyPlan', () => {
-  const fakeOvh = ({ failDelete = [], failPost = false, failRefresh = false } = {}) => {
-    const calls = [];
-    return {
-      calls,
-      async delete(path) {
-        calls.push(['DELETE', path]);
-        if (failDelete.some((id) => path.endsWith(`/${id}`))) throw new Error('boom');
-      },
-      async post(path, body) {
-        calls.push(['POST', path, body]);
-        if (path.endsWith('/refresh')) {
-          if (failRefresh) throw new Error('refresh failed');
-          return null;
-        }
-        if (failPost) throw new Error('nope');
-        return { ...body };
-      },
-    };
-  };
-
-  test('deletes, creates, then refreshes the zone', async () => {
-    const ovh = fakeOvh();
-    const p = plan([rec('MX', '', '10 mx1.mail.ovh.net.')]);
-    const done = await applyPlan(ovh, 'example.com', p);
-
-    assert.equal(done.deleted.length, 1);
-    assert.equal(done.created.length, 3);
-    assert.deepEqual(done.errors, []);
-    assert.equal(ovh.calls.at(-1)[1], '/domain/zone/example.com/refresh');
-  });
-
-  test('a failing deletion is collected, not thrown, and the rest still runs', async () => {
-    const record = rec('MX', '', '10 mx1.mail.ovh.net.');
-    const ovh = fakeOvh({ failDelete: [record.id] });
-    const done = await applyPlan(ovh, 'example.com', plan([record]));
-
-    assert.equal(done.deleted.length, 0);
-    assert.equal(done.errors.length, 1);
-    assert.match(done.errors[0], /^DELETE /);
-    assert.equal(done.created.length, 3, 'creations must still happen');
-  });
-
-  test('a failing creation is collected per record', async () => {
-    const done = await applyPlan(fakeOvh({ failPost: true }), 'example.com', plan([]));
-    assert.equal(done.created.length, 0);
-    assert.equal(done.errors.filter((e) => e.startsWith('CREATE')).length, 3);
-  });
-
-  test('a failing refresh is reported rather than swallowed', async () => {
-    const done = await applyPlan(fakeOvh({ failRefresh: true }), 'example.com', plan([]));
-    assert.ok(done.errors.some((e) => e.startsWith('REFRESH:')));
-  });
-
-  test('the zone name is URL-encoded in every path', async () => {
-    const ovh = fakeOvh();
-    await applyPlan(ovh, 'xn--exmple-cua.com', plan([]));
-    assert.ok(ovh.calls.every(([, path]) => path.includes('xn--exmple-cua.com')));
-  });
-
-  test('an empty plan still refreshes and reports nothing done', async () => {
-    const ovh = fakeOvh();
-    const done = await applyPlan(ovh, 'example.com', { delete: [], create: [], keep: [] });
-    assert.deepEqual(done, { deleted: [], created: [], errors: [] });
-    assert.equal(ovh.calls.length, 1);
-  });
+test('the legacy writer refuses to bypass the backed-up transaction boundary', async () => {
+  await assert.rejects(applyPlan({}, 'example.com', plan([])), /Use applyTransaction/);
 });
 
 describe('planZone and CAA', () => {
@@ -315,7 +251,7 @@ describe('planZone and CAA', () => {
     const caa = rec('CAA', '', '0 issue "letsencrypt.org"');
     const out = plan([caa]);
     assert.equal(out.delete.length, 0);
-    assert.equal(out.keep.find((r) => r.fieldType === 'CAA').reason, 'CAA out of scope (pass --caa)');
+    assert.equal(out.keep.find((r) => r.fieldType === 'CAA').reason, 'CAA retained: no replacement published');
   });
 
   test('with --caa a permissive CAA is replaced by the deny pair', () => {
@@ -382,40 +318,19 @@ describe('planZone and CAA', () => {
   });
 });
 
-describe('fetchRecords', () => {
-  const fakeZone = (byType) => ({
-    calls: [],
-    async get(path) {
-      this.calls.push(path);
-      const m = /fieldType=(\w+)/.exec(path);
-      if (m) {
-        const found = byType[m[1]];
-        if (found === undefined) { const e = new Error('Not found'); e.status = 404; throw e; }
-        if (found === 400) { const e = new Error('Bad enum'); e.status = 400; throw e; }
-        return found.map((_, i) => `${m[1]}-${i}`);
-      }
-      const [type, i] = path.split('/').pop().split('-');
-      return { id: path, fieldType: type, subDomain: '', target: byType[type][Number(i)] };
-    },
+describe('complete record reads', () => {
+  test('retrieves every id without filtering types', async () => {
+    const paths = [];
+    const client = { async get(path) {
+      paths.push(path);
+      return path.endsWith('/record') ? [1, 2] : { id: Number(path.split('/').pop()) };
+    } };
+    assert.equal((await fetchRecords(client, 'example.com')).length, 2);
+    assert.equal(paths[0], '/domain/zone/example.com/record');
   });
-
-  test('CAA is among the types queried', async () => {
-    const ovh = fakeZone({ CAA: ['0 issue ";"'] });
-    const records = await fetchRecords(ovh, 'example.com');
-    assert.ok(ovh.calls.some((c) => c.includes('fieldType=CAA')));
-    assert.deepEqual(records.map((r) => r.target), ['0 issue ";"']);
-  });
-
-  test('a 400 on an unknown fieldType skips the type instead of aborting the run', async () => {
-    // Seen on CAA: some accounts' API version does not know the enum value.
-    // Losing one type must not cost the whole batch.
-    const ovh = fakeZone({ TXT: ['"v=spf1 -all"'], CAA: 400 });
-    const records = await fetchRecords(ovh, 'example.com');
-    assert.deepEqual(records.map((r) => r.target), ['"v=spf1 -all"']);
-  });
-
-  test('anything other than a 404 or a 400 still propagates', async () => {
-    const ovh = { async get() { const e = new Error('rate limited'); e.status = 429; throw e; } };
-    await assert.rejects(() => fetchRecords(ovh, 'example.com'), /rate limited/);
-  });
+  for (const status of [400, 404, 429]) {
+    test(`a ${status} never becomes a partial inventory`, async () => {
+      await assert.rejects(fetchRecords({ async get() { throw new Error(`read failed ${status}`); } }, 'example.com'), /read failed/);
+    });
+  }
 });

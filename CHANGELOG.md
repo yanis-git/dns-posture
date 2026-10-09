@@ -4,6 +4,17 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0] — 2026-10-09
+
+- Rename to dns-posture with the historical binary retained; Node >=22.14.
+- Shared configurable engine for preview, harden and batch; unchanged baseline scores.
+- OVH and Cloudflare adapters, complete reads, zone discovery and bounded read retries.
+- Verified native snapshots, provider/account separation, local locking and concurrency detection.
+- Updates before replacements, fail-stop writes, operation journals and final verification.
+- Differential restoration with current-state backup; legacy exports remain offline-readable.
+- Explicit npm archive allowlist, independent artifact smoke and tagged OIDC releases.
+- OVH CAA writes blocked until its API encoding is validated.
+
 ## [0.2.0] — 2026-09-16
 
 A compliance baseline, a portfolio-wide offline audit, and an optional default-deny CAA record.
