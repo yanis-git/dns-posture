@@ -55,4 +55,6 @@ La propagation DNS n’est pas atomique. Les verrous locaux n’empêchent pas u
 
 [Audit de sûreté](docs/AUDIT-1.0.md) · [Politique](docs/POLICY.md) · [Référentiel](docs/BASELINE.md) · [Publication npm](docs/RELEASING.md)
 
+Retours et enjeux : [Nettoyer un portefeuille DNS sans casser les usages actifs](https://fennec.sh/blog/nettoyer-portefeuille-dns) · [Les domaines oubliés restent une responsabilité](https://fennec.sh/blog/domaines-oublies-responsabilite).
+
 Développement : `npm ci`, `npm test`, `npm run lint`, `npm run test:pack`. Les tests simulent les API sans credentials réels ni écriture DNS. Licence MIT.

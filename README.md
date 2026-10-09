@@ -55,4 +55,6 @@ DNS propagation is not atomic. Local locks cannot stop remote operators. OVH CAA
 
 [Safety audit](docs/AUDIT-1.0.md) · [Policy](docs/POLICY.md) · [Baseline](docs/BASELINE.md) · [Release setup](docs/RELEASING.md)
 
+Field notes: [Cleaning a DNS portfolio without breaking active uses](https://fennec.sh/en/blog/cleaning-dns-portfolio) · [Forgotten domains remain a responsibility](https://fennec.sh/en/blog/forgotten-domains-responsibility).
+
 Development: `npm ci`, `npm test`, `npm run lint`, `npm run test:pack`. Tests use simulated APIs and no real credentials or DNS writes. MIT licensed.
