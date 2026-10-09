@@ -44,3 +44,10 @@ for (const provider of ['ovh', 'cloudflare']) {
     });
   }
 }
+
+test('batch continues after a refused zone and returns the worst result', () => {
+  const result = cli('ovh', ['harden-batch', 'missing.example', 'example.com', '--apply']);
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stdout, /APPLY example.com/);
+  assert.ok(JSON.parse(readFileSync(join(dir, 'state.json'))).writes.length > 0);
+});
